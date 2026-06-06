@@ -33,4 +33,17 @@ dependencies {
         intellijIdea("2026.1.2")
         bundledPlugin("com.intellij.java")
     }
+    implementation("com.google.code.gson:gson:2.10.1")
+}
+
+// Forward the OpenAI key into the sandbox IDE so AI grouping works no matter how runIde is
+// launched (terminal or the Gradle tool window). Provide it as either the OPENAI_API_KEY
+// environment variable or an `openaiApiKey` Gradle property (e.g. in ~/.gradle/gradle.properties).
+tasks.named<JavaExec>("runIde") {
+    val openAiKey = providers.environmentVariable("OPENAI_API_KEY")
+        .orElse(providers.gradleProperty("openaiApiKey"))
+        .getOrElse("")
+    if (openAiKey.isNotEmpty()) {
+        environment("OPENAI_API_KEY", openAiKey)
+    }
 }
