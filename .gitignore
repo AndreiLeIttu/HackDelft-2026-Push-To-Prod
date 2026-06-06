@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# IntelliJ IDEA project state
+.idea/
+*.iml
+*.iws
+
+# IntelliJ Platform plugin sandbox output
+.intellijPlatform/
+run/
+sandbox/
+
+# Kotlin
+.kotlin/
+
+# Logs and local OS/editor noise
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

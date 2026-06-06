@@ -1,0 +1,19 @@
+<idea-plugin>
+    <id>com.hackdelft.repomap</id>
+    <name>Repo Map</name>
+    <vendor>HackDelft Push To Prod</vendor>
+
+    <description><![CDATA[
+        Visualizes a high-level project tree as an interactive map for quickly orienting yourself in an unfamiliar repository.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Repo Map"
+            anchor="right"
+            secondary="true"
+            factoryClass="com.hackdelft.repomap.RepoMapToolWindowFactory"/>
+    </extensions>
+</idea-plugin>
