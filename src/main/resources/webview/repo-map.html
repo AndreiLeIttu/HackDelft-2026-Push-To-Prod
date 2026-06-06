@@ -90,6 +90,25 @@
       line-height: 17px;
     }
 
+    .crumb {
+      cursor: pointer;
+    }
+
+    .crumb:hover {
+      color: var(--text);
+      text-decoration: underline;
+    }
+
+    .crumb.current {
+      color: var(--text);
+      cursor: default;
+      text-decoration: none;
+    }
+
+    .crumb-sep {
+      color: var(--subtle);
+    }
+
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -118,6 +137,12 @@
       background: var(--surface-strong);
     }
 
+    .button.active {
+      border-color: var(--violet);
+      background: color-mix(in srgb, var(--violet) 26%, var(--surface));
+      color: var(--text);
+    }
+
     .stage {
       position: relative;
       min-height: 0;
@@ -132,7 +157,7 @@
       touch-action: none;
     }
 
-    svg:active {
+    svg.grabbing {
       cursor: grabbing;
     }
 
@@ -142,57 +167,82 @@
 
     .edge {
       fill: none;
-      opacity: 1;
       stroke: rgba(167, 164, 184, 0.22);
       stroke-width: 1.5;
-      transition: opacity 220ms ease;
+      transition: opacity 200ms ease, stroke 200ms ease, stroke-width 200ms ease;
+    }
+
+    /* Hover focus: light up neighbours, fade the rest (Obsidian behaviour). */
+    .edge.lit {
+      stroke: var(--violet);
+      stroke-width: 2.4;
+      opacity: 1;
+    }
+
+    .edge.dim {
+      opacity: 0.06;
     }
 
     .bubble {
       cursor: pointer;
       outline: none;
-      opacity: 1;
-      transition: opacity 220ms ease;
+      transition: opacity 200ms ease;
+    }
+
+    .bubble.dim {
+      opacity: 0.14;
     }
 
     .bubble circle {
-      fill: color-mix(in srgb, var(--cluster-color) 26%, var(--surface));
+      fill: color-mix(in srgb, var(--cluster-color) 24%, var(--surface));
       stroke: var(--cluster-color);
       stroke-width: 2.5;
-      filter: drop-shadow(0 14px 24px rgba(0, 0, 0, 0.36));
-      transition: r 160ms ease, stroke-width 160ms ease, filter 160ms ease;
+      filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.36));
+      transition: r 200ms ease, stroke-width 160ms ease, filter 160ms ease, fill 200ms ease;
+    }
+
+    /* Expanded clusters read brighter, like an opened note. */
+    .bubble.expanded circle {
+      fill: color-mix(in srgb, var(--cluster-color) 42%, var(--surface));
+    }
+
+    /* The focused node is the clear hub: brighter fill + thicker stroke. */
+    .bubble.root circle {
+      stroke-width: 3.5;
+      fill: color-mix(in srgb, var(--cluster-color) 58%, var(--surface));
+    }
+
+    .bubble.root .label {
+      font-size: 14.5px;
+      font-weight: 800;
     }
 
     .bubble:hover circle,
-    .bubble:focus-visible circle {
+    .bubble:focus-visible circle,
+    .bubble.lit circle {
       stroke-width: 4;
-      filter: drop-shadow(0 0 22px color-mix(in srgb, var(--cluster-color) 42%, transparent));
+      filter: drop-shadow(0 0 20px color-mix(in srgb, var(--cluster-color) 55%, transparent));
     }
 
-    .bubble text {
+    .bubble .label {
       fill: var(--text);
-      font-size: 13px;
-      font-weight: 650;
+      font-size: 12.5px;
+      font-weight: 600;
       paint-order: stroke;
       pointer-events: none;
-      stroke: rgba(17, 17, 19, 0.88);
+      stroke: rgba(17, 17, 19, 0.9);
       stroke-linejoin: round;
-      stroke-width: 5px;
-      text-anchor: middle;
+      stroke-width: 4px;
+      text-anchor: start;
+      opacity: var(--label-opacity, 1);
+      transition: opacity 160ms ease;
     }
 
-    .bubble .kind {
-      fill: var(--muted);
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-
-    .ghost {
-      fill: none;
-      stroke: rgba(139, 92, 246, 0.24);
-      stroke-dasharray: 7 10;
-      stroke-width: 1.5;
+    /* Highlighted / focused labels stay fully readable regardless of zoom. */
+    .bubble.lit .label,
+    .bubble:hover .label,
+    .bubble.root .label {
+      opacity: 1;
     }
 
     .status {
@@ -284,10 +334,12 @@
         <span id="breadcrumb">Repository overview</span>
       </div>
       <div class="controls">
-        <button id="prevLevel" class="button" type="button" title="Previous level">←</button>
-        <button id="nextLevel" class="button" type="button" title="Next level">→</button>
-        <button id="up" class="button" type="button">Up</button>
-        <button id="home" class="button" type="button">Home</button>
+        <button id="levelToggle" class="button" type="button" aria-pressed="false"
+                title="Show every node on this level, grouped by parent">Siblings: off</button>
+        <button id="back" class="button" type="button" title="Back up a level (←)">←</button>
+        <button id="forward" class="button" type="button" title="Forward into the last node (→)">→</button>
+        <button id="home" class="button" type="button" title="Back to the repository root">Home</button>
+        <button id="resetView" class="button" type="button" title="Re-center and reset zoom">Reset view</button>
       </div>
     </header>
 
@@ -306,44 +358,57 @@
   </main>
 
   <script>
+    const SVGNS = "http://www.w3.org/2000/svg";
     const repoTree = __REPO_TREE_JSON__;
     const clusterColors = ["#8b5cf6", "#22d3ee", "#34d399", "#fbbf24", "#f472b6", "#60a5fa"];
-    const svg = document.getElementById("map");
-    const viewport = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const edgesLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const nodesLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const prevLevelButton = document.getElementById("prevLevel");
-    const nextLevelButton = document.getElementById("nextLevel");
-    const upButton = document.getElementById("up");
-    const homeButton = document.getElementById("home");
 
+    const svg = document.getElementById("map");
+    const viewport = document.createElementNS(SVGNS, "g");
+    const edgesLayer = document.createElementNS(SVGNS, "g");
+    const nodesLayer = document.createElementNS(SVGNS, "g");
     viewport.setAttribute("class", "scene");
     svg.appendChild(viewport);
     viewport.append(edgesLayer, nodesLayer);
 
-    const state = {
-      viewLabel: "repository",
-      visibleNodes: [],
-      selected: null,
-      scale: 1,
-      x: 0,
-      y: 0,
-      dragging: false,
-      lastPointer: null,
-      dragStarted: false,
-      suppressClickUntil: 0,
-      animationFrame: null
-    };
+    const levelToggleButton = document.getElementById("levelToggle");
+    const backButton = document.getElementById("back");
+    const forwardButton = document.getElementById("forward");
+    const homeButton = document.getElementById("home");
+    const resetButton = document.getElementById("resetView");
 
+    /* ------------------------------------------------------------------ */
+    /* Tree model                                                          */
+    /* ------------------------------------------------------------------ */
+    let nodeSeq = 0;
     function normalize(node, parent = null, depth = 0, index = 0, path = []) {
       const entry = {
-        ...node,
+        id: nodeSeq++,
+        name: node.name,
+        kind: node.kind,
+        summary: node.summary,
         parent,
         depth,
         index,
         path: [...path, node.name],
-        children: []
+        children: [],
+        x: 0, y: 0, vx: 0, vy: 0, fx: null, fy: null,
+        r: 15
       };
+      // Stable colour: the root is violet; each child picks a hue from the
+      // palette while skipping its parent's, so a child never matches its
+      // parent and the colour stays put when the node later becomes the hub.
+      if (!parent) {
+        entry.colorIndex = 0;
+      } else {
+        const len = clusterColors.length;
+        const available = [];
+        for (let k = 1; k < len; k += 1) {
+          available.push((parent.colorIndex + k) % len);
+        }
+        entry.colorIndex = available[index % available.length];
+      }
+      entry.color = clusterColors[entry.colorIndex];
+
       entry.children = (node.children || []).map((child, childIndex) =>
         normalize(child, entry, depth + 1, childIndex, entry.path)
       );
@@ -351,169 +416,330 @@
     }
 
     const root = normalize(repoTree);
-    state.visibleNodes = [root];
-    state.selected = root;
 
     function allNodes() {
-      const result = [];
-      const visit = (node) => {
-        result.push(node);
+      const out = [];
+      (function visit(node) {
+        out.push(node);
         node.children.forEach(visit);
-      };
-      visit(root);
-      return result;
+      })(root);
+      return out;
     }
 
     const maxDepth = Math.max(...allNodes().map((node) => node.depth));
 
-    function enterNode(node, direction = 1) {
-      if (!node.children.length) {
-        state.selected = node;
-        updateDetails();
-        return;
-      }
-
-      state.visibleNodes = node.children;
-      state.selected = node.children[0] || node;
-      state.viewLabel = `children of ${node.name}`;
-      render(direction);
-    }
-
-    function showPreviousLevel() {
-      const parents = uniqueNodes(state.visibleNodes.map((node) => node.parent).filter(Boolean));
-      if (!parents.length) {
-        return;
-      }
-
-      state.visibleNodes = parents;
-      state.selected = parents[0];
-      state.viewLabel = parents.length === 1 && parents[0] === root
-        ? "repository"
-        : `level ${parents[0].depth + 1}`;
-      render(-1);
-    }
-
-    function showNextLevel() {
-      const children = state.visibleNodes.flatMap((node) => node.children);
-      if (!children.length) {
-        return;
-      }
-
-      state.visibleNodes = children;
-      state.selected = children[0];
-      state.viewLabel = `level ${children[0].depth + 1}`;
-      render(1);
-    }
-
-    function uniqueNodes(nodes) {
-      return [...new Set(nodes)];
-    }
-
-    function goHome() {
-      state.visibleNodes = [root];
-      state.selected = root;
-      state.viewLabel = "repository";
-      render(-1);
-    }
-
+    // Each node keeps the stable hue assigned at build time, so it carries its
+    // colour with it when clicked into the hub (children already skip it). In
+    // level view nodes take their parent's hue so each sibling group reads as
+    // one colour.
     function colorFor(node) {
-      if (!node.parent) {
-        return clusterColors[0];
+      if (state.showLevel && !currentNodes.includes(focus) && node.parent) {
+        return node.parent.color;
       }
-      return clusterColors[node.parent.index % clusterColors.length];
+      return node.color;
     }
 
-    function layout(nodes) {
-      const width = svg.clientWidth || 900;
-      const height = svg.clientHeight || 640;
-      const centerX = width / 2;
-      const centerY = height / 2;
-
-      if (nodes.length === 1) {
-        nodes[0].x = centerX;
-        nodes[0].y = centerY;
-        nodes[0].r = Math.min(118, Math.max(74, Math.min(width, height) * 0.16));
-        return;
+    // The focus is the largest; children hint their own depth by child count, so
+    // nodes you can drill into look bigger (Obsidian sizes by link count).
+    function radiusFor(node) {
+      if (node === focus) {
+        return 44; // always larger than any child (children cap at 34)
       }
+      return Math.min(34, 14 + Math.sqrt(node.children.length) * 5);
+    }
 
-      const clusterCount = uniqueNodes(nodes.map((node) => node.parent).filter(Boolean)).length || 1;
-      const spread = Math.min(width, height) * Math.min(0.38, 0.2 + nodes.length * 0.012);
-      const radius = Math.min(82, Math.max(24, Math.min(width, height) / (Math.sqrt(nodes.length) * 5.5 + 4)));
-      nodes.forEach((node, index) => {
-        const clusterIndex = node.parent ? uniqueNodes(nodes.map((item) => item.parent).filter(Boolean)).indexOf(node.parent) : 0;
-        const siblings = nodes.filter((item) => item.parent === node.parent);
-        const siblingIndex = siblings.indexOf(node);
-        const clusterAngle = (Math.PI * 2 * clusterIndex) / clusterCount - Math.PI / 2;
-        const localAngle = (Math.PI * 2 * siblingIndex) / Math.max(siblings.length, 1) - Math.PI / 2;
-        const clusterX = centerX + Math.cos(clusterAngle) * (clusterCount === 1 ? 0 : spread * 0.72);
-        const clusterY = centerY + Math.sin(clusterAngle) * (clusterCount === 1 ? 0 : spread * 0.72);
-        const localSpread = Math.min(spread * 0.38, Math.max(80, radius * 1.8));
-        node.x = clusterX + Math.cos(localAngle) * (siblings.length === 1 ? 0 : localSpread);
-        node.y = clusterY + Math.sin(localAngle) * (siblings.length === 1 ? 0 : localSpread);
-        node.r = radius;
+    /* ------------------------------------------------------------------ */
+    /* View state                                                          */
+    /* ------------------------------------------------------------------ */
+    // `focus` is the node whose children are currently shown. We keep a small
+    // navigation history so the arrows can step back and forward through it.
+    let focus = root;
+    let history = [root];
+    let histIndex = 0;
+
+    const state = {
+      selected: root,
+      hovered: null,
+      showLevel: false, // toggle: show the whole level grouped by parent
+      scale: 1,
+      x: 0,
+      y: 0,
+      panning: false,
+      draggedNode: null,
+      lastPointer: null,
+      dragStartWorld: null,
+      movedDuringDrag: false
+    };
+
+    let currentNodes = [];
+    let currentEdges = [];
+    let nodeEls = new Map();   // node -> { group, circle }
+    let edgeEls = [];          // { edge, path }
+    let adjacency = new Map(); // node -> Set(neighbour nodes)
+
+    // The nodes on the focus's own level: the focus plus its siblings.
+    function levelParents() {
+      return focus.parent ? focus.parent.children : [focus];
+    }
+
+    // Default: the focused hub with its direct children around it.
+    // Toggle on: every node at the children's depth — the focus's children
+    // PLUS all their cousins (children of the focus's siblings), grouped by
+    // parent. Falls back to the hub view when there is nothing deeper to show.
+    function visibleNodes() {
+      if (state.showLevel) {
+        const level = levelParents().flatMap((parent) => parent.children);
+        if (level.length) {
+          return level;
+        }
+      }
+      return [focus, ...focus.children];
+    }
+
+    function visibleEdges(nodes) {
+      // Hub view (also the toggle's leaf fallback, where the focus is shown).
+      if (!state.showLevel || nodes.includes(focus)) {
+        return focus.children.map((child) => ({ source: focus, target: child }));
+      }
+      // Level view: ring the siblings within each parent group so groups cohere.
+      const edges = [];
+      const parents = [];
+      nodes.forEach((node) => {
+        if (!parents.includes(node.parent)) {
+          parents.push(node.parent);
+        }
       });
-    }
-
-    function clear() {
-      edgesLayer.replaceChildren();
-      nodesLayer.replaceChildren();
-    }
-
-    function renderEdges(nodes) {
-      const groups = uniqueNodes(nodes.map((node) => node.parent).filter(Boolean))
-        .map((parent) => nodes.filter((node) => node.parent === parent));
-
-      groups.forEach((group) => {
+      parents.forEach((parent) => {
+        const group = nodes.filter((node) => node.parent === parent);
         if (group.length < 2) {
           return;
         }
-        for (let index = 0; index < group.length; index += 1) {
-          const source = group[index];
-          const target = group[(index + 1) % group.length];
-          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-          path.setAttribute("class", "edge");
-          path.setAttribute("d", `M ${source.x} ${source.y} L ${target.x} ${target.y}`);
-          path.style.opacity = "0";
-          edgesLayer.appendChild(path);
-          requestAnimationFrame(() => {
-            path.style.opacity = "1";
-          });
+        for (let i = 0; i < group.length; i += 1) {
+          edges.push({ source: group[i], target: group[(i + 1) % group.length] });
         }
+      });
+      return edges;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Force simulation                                                    */
+    /* ------------------------------------------------------------------ */
+    const params = {
+      center: 0.012,    // pull toward the middle
+      repel: 5200,      // node-node repulsion
+      linkStrength: 0.05,
+      linkPad: 64,      // resting gap between connected nodes
+      collidePad: 10,
+      decay: 0.82,      // velocity damping
+      alphaDecay: 0.014,
+      alphaMin: 0.01
+    };
+    let alpha = 0;
+
+    function reheat(value) {
+      alpha = Math.max(alpha, value);
+    }
+
+    function step() {
+      const width = svg.clientWidth || 900;
+      const height = svg.clientHeight || 640;
+      const cx = width / 2;
+      const cy = height / 2;
+
+      if (alpha > params.alphaMin) {
+        // Gravity toward the centre.
+        currentNodes.forEach((node) => {
+          node.vx += (cx - node.x) * params.center * alpha;
+          node.vy += (cy - node.y) * params.center * alpha;
+        });
+
+        // Pairwise repulsion.
+        for (let i = 0; i < currentNodes.length; i += 1) {
+          const a = currentNodes[i];
+          for (let j = i + 1; j < currentNodes.length; j += 1) {
+            const b = currentNodes[j];
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            const d2 = dx * dx + dy * dy || 0.01;
+            if (d2 > 360000) {
+              continue;
+            }
+            const d = Math.sqrt(d2);
+            const force = (params.repel * alpha) / d2;
+            const ux = dx / d;
+            const uy = dy / d;
+            a.vx += ux * force;
+            a.vy += uy * force;
+            b.vx -= ux * force;
+            b.vy -= uy * force;
+          }
+        }
+
+        // Link springs.
+        currentEdges.forEach((edge) => {
+          const a = edge.source;
+          const b = edge.target;
+          const rest = a.r + b.r + params.linkPad;
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+          const force = (d - rest) * params.linkStrength * alpha;
+          const ux = dx / d;
+          const uy = dy / d;
+          a.vx += ux * force;
+          a.vy += uy * force;
+          b.vx -= ux * force;
+          b.vy -= uy * force;
+        });
+
+        alpha = Math.max(0, alpha - params.alphaDecay);
+      }
+
+      // Collision resolution keeps bubbles from overlapping.
+      for (let i = 0; i < currentNodes.length; i += 1) {
+        const a = currentNodes[i];
+        for (let j = i + 1; j < currentNodes.length; j += 1) {
+          const b = currentNodes[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+          const min = a.r + b.r + params.collidePad;
+          if (d < min) {
+            const shift = ((min - d) / d) * 0.5;
+            const ox = dx * shift;
+            const oy = dy * shift;
+            if (a.fx == null) { a.x -= ox; a.y -= oy; }
+            if (b.fx == null) { b.x += ox; b.y += oy; }
+          }
+        }
+      }
+
+      // Integrate.
+      currentNodes.forEach((node) => {
+        if (node.fx != null) {
+          node.x = node.fx;
+          node.y = node.fy;
+          node.vx = 0;
+          node.vy = 0;
+          return;
+        }
+        node.vx *= params.decay;
+        node.vy *= params.decay;
+        node.x += node.vx;
+        node.y += node.vy;
       });
     }
 
-    function renderNodes(nodes, direction) {
-      nodes.forEach((node) => {
-        const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-        group.setAttribute("class", "bubble");
+    function paint() {
+      nodeEls.forEach(({ group }, node) => {
         group.setAttribute("transform", `translate(${node.x}, ${node.y})`);
+      });
+      edgeEls.forEach(({ edge, path }) => {
+        path.setAttribute("d", `M ${edge.source.x} ${edge.source.y} L ${edge.target.x} ${edge.target.y}`);
+      });
+    }
+
+    function frame() {
+      if (alpha > params.alphaMin || state.draggedNode) {
+        step();
+        paint();
+      }
+      requestAnimationFrame(frame);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Rendering                                                           */
+    /* ------------------------------------------------------------------ */
+    function buildGraph() {
+      const previous = new Set(currentNodes);
+      currentNodes = visibleNodes();
+      currentEdges = visibleEdges(currentNodes);
+
+      const levelView = state.showLevel && !currentNodes.includes(focus);
+      adjacency = new Map(currentNodes.map((node) => [node, new Set()]));
+      if (levelView) {
+        // Hovering highlights the whole sibling group, not just ring neighbours.
+        currentNodes.forEach((node) => {
+          currentNodes.forEach((other) => {
+            if (other !== node && other.parent === node.parent) {
+              adjacency.get(node).add(other);
+            }
+          });
+        });
+      } else {
+        currentEdges.forEach((edge) => {
+          adjacency.get(edge.source).add(edge.target);
+          adjacency.get(edge.target).add(edge.source);
+        });
+      }
+
+      const width = svg.clientWidth || 900;
+      const height = svg.clientHeight || 640;
+      currentNodes.forEach((node, index) => {
+        node.r = radiusFor(node);
+        if (node === focus) {
+          // Always pull the focused node to the centre when its position is new.
+          if (!previous.has(node)) {
+            node.x = width / 2;
+            node.y = height / 2;
+          }
+          node.vx = 0;
+          node.vy = 0;
+        } else if (!previous.has(node)) {
+          // Seed near the node's anchor so it springs outward. In level view
+          // the anchor is each node's (hidden) parent, so groups start apart.
+          const anchor = levelView ? (node.parent || focus) : focus;
+          const angle = index * 2.399963; // golden angle, avoids overlap
+          const reach = (anchor.r || 30) + 80;
+          node.x = (anchor.x || width / 2) + Math.cos(angle) * reach;
+          node.y = (anchor.y || height / 2) + Math.sin(angle) * reach;
+          node.vx = 0;
+          node.vy = 0;
+        }
+      });
+
+      renderDom();
+      reheat(1);
+    }
+
+    function renderDom() {
+      edgesLayer.replaceChildren();
+      nodesLayer.replaceChildren();
+      nodeEls = new Map();
+      edgeEls = [];
+
+      currentEdges.forEach((edge) => {
+        const path = document.createElementNS(SVGNS, "path");
+        path.setAttribute("class", "edge");
+        edgesLayer.appendChild(path);
+        edgeEls.push({ edge, path });
+      });
+
+      currentNodes.forEach((node) => {
+        const group = document.createElementNS(SVGNS, "g");
+        let className = "bubble";
+        if (node === focus) className += " root";
+        if (node !== focus && node.children.length) className += " expanded";
+        group.setAttribute("class", className);
         group.style.setProperty("--cluster-color", colorFor(node));
-        group.style.opacity = "0";
         group.tabIndex = 0;
 
-        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        const circle = document.createElementNS(SVGNS, "circle");
         circle.setAttribute("r", String(node.r));
 
-        const name = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        name.setAttribute("y", "-2");
-        name.textContent = truncateLabel(node.name, node.r);
+        const label = document.createElementNS(SVGNS, "text");
+        label.setAttribute("class", "label");
+        label.setAttribute("x", String(node.r + 8));
+        label.setAttribute("y", "5");
+        label.textContent = node.children.length
+          ? `${node.name} (${node.children.length})`
+          : node.name;
 
-        const kind = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        kind.setAttribute("class", "kind");
-        kind.setAttribute("y", "19");
-        kind.textContent = node.children.length ? `${node.kind || "node"} / ${node.children.length}` : node.kind || "leaf";
+        group.append(circle, label);
 
-        group.append(circle, name, kind);
-        group.addEventListener("click", () => {
-          if (performance.now() < state.suppressClickUntil) {
-            return;
-          }
-          enterNode(node);
-        });
-        group.addEventListener("pointerenter", () => {
-          state.selected = node;
-          updateDetails();
-        });
+        group.addEventListener("pointerdown", (event) => onNodePointerDown(event, node));
+        group.addEventListener("pointerenter", () => setHover(node));
+        group.addEventListener("pointerleave", () => setHover(null));
         group.addEventListener("focus", () => {
           state.selected = node;
           updateDetails();
@@ -521,153 +747,295 @@
         group.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            enterNode(node);
-          }
-          if (event.key === "Escape") {
-            goUp();
+            handleNodeClick(node);
           }
         });
 
         nodesLayer.appendChild(group);
-        requestAnimationFrame(() => {
-          group.style.opacity = "1";
-          group.animate(
-            [
-              { transform: `translate(${direction * 18}px, 0) scale(0.96)`, opacity: 0 },
-              { transform: "translate(0, 0) scale(1)", opacity: 1 }
-            ],
-            { duration: 260, easing: "cubic-bezier(.2,.8,.2,1)" }
-          );
-        });
+        nodeEls.set(node, { group, circle });
+      });
+
+      applyHighlight();
+      updateDetails();
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Hover highlight (focus neighbours, fade the rest)                   */
+    /* ------------------------------------------------------------------ */
+    function setHover(node) {
+      state.hovered = node;
+      if (node) {
+        state.selected = node;
+        updateDetails();
+      }
+      applyHighlight();
+    }
+
+    function applyHighlight() {
+      const focus = state.hovered;
+      if (!focus) {
+        nodeEls.forEach(({ group }) => group.classList.remove("dim", "lit"));
+        edgeEls.forEach(({ path }) => path.classList.remove("dim", "lit"));
+        return;
+      }
+      const neighbours = adjacency.get(focus) || new Set();
+      nodeEls.forEach(({ group }, node) => {
+        const lit = node === focus || neighbours.has(node);
+        group.classList.toggle("lit", lit);
+        group.classList.toggle("dim", !lit);
+      });
+      edgeEls.forEach(({ edge, path }) => {
+        const lit = edge.source === focus || edge.target === focus;
+        path.classList.toggle("lit", lit);
+        path.classList.toggle("dim", !lit);
       });
     }
 
-    function truncateLabel(label, radius) {
-      const maxCharacters = Math.max(8, Math.floor(radius / 4.4));
-      if (label.length <= maxCharacters) {
-        return label;
+    /* ------------------------------------------------------------------ */
+    /* Drill-down navigation                                               */
+    /* ------------------------------------------------------------------ */
+    function setFocus(node) {
+      focus = node;
+      state.selected = node;
+      state.hovered = null;
+      buildGraph();
+    }
+
+    // Clicking: open a node's children (drill in), re-center on the hub, or
+    // just select a leaf to read its summary. Going *up* is done with the
+    // arrows or the clickable breadcrumb, not by clicking the hub.
+    function handleNodeClick(node) {
+      if (node === focus) {
+        resetView();
+        return;
       }
-      return `${label.slice(0, maxCharacters - 1)}...`;
+      if (node.children.length) {
+        history = history.slice(0, histIndex + 1);
+        history.push(node);
+        histIndex = history.length - 1;
+        setFocus(node);
+        return;
+      }
+      state.selected = node;
+      updateDetails();
+    }
+
+    // Jump straight to any ancestor (used by the breadcrumb), keeping the
+    // forward history intact when the target is already on the visited path.
+    function jumpTo(node) {
+      const idx = history.indexOf(node);
+      if (idx !== -1) {
+        histIndex = idx;
+      } else {
+        history = [];
+        for (let n = node; n; n = n.parent) {
+          history.unshift(n);
+        }
+        histIndex = history.length - 1;
+      }
+      setFocus(node);
+    }
+
+    function goBack() {
+      if (histIndex > 0) {
+        histIndex -= 1;
+        setFocus(history[histIndex]);
+      }
+    }
+
+    function goForward() {
+      if (histIndex < history.length - 1) {
+        histIndex += 1;
+        setFocus(history[histIndex]);
+      }
+    }
+
+    function goHome() {
+      history = [root];
+      histIndex = 0;
+      setFocus(root);
+    }
+
+    function resetView() {
+      state.scale = 1;
+      state.x = 0;
+      state.y = 0;
+      updateViewport();
+      reheat(0.6);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Details panel + toolbar state                                       */
+    /* ------------------------------------------------------------------ */
+    function renderBreadcrumb() {
+      const host = document.getElementById("breadcrumb");
+      host.replaceChildren();
+      const chain = [];
+      for (let n = focus; n; n = n.parent) {
+        chain.unshift(n);
+      }
+      chain.forEach((node, i) => {
+        if (i > 0) {
+          const sep = document.createElement("span");
+          sep.className = "crumb-sep";
+          sep.textContent = " › ";
+          host.append(sep);
+        }
+        const crumb = document.createElement("span");
+        crumb.className = node === focus ? "crumb current" : "crumb";
+        crumb.textContent = node.name;
+        if (node !== focus) {
+          crumb.title = `Jump to ${node.name}`;
+          crumb.addEventListener("click", () => jumpTo(node));
+        }
+        host.append(crumb);
+      });
     }
 
     function updateDetails() {
-      document.getElementById("viewTitle").textContent = repoTree.name;
-      document.getElementById("breadcrumb").textContent = `${state.viewLabel} / ${state.visibleNodes.length} visible`;
+      document.getElementById("viewTitle").textContent = root.name;
+      renderBreadcrumb();
       document.getElementById("selectedName").textContent = state.selected.name;
       document.getElementById("selectedKind").textContent = state.selected.kind || "node";
       document.getElementById("selectedSummary").textContent =
         state.selected.summary || "No summary available yet.";
-      document.getElementById("levelLabel").textContent = `Depth ${state.visibleNodes[0].depth + 1} of ${maxDepth + 1}`;
-      document.getElementById("hintLabel").textContent = "Click enters a node. Left/Right change level. Wheel zooms. Drag pans.";
-      prevLevelButton.disabled = !state.visibleNodes.some((node) => node.parent);
-      nextLevelButton.disabled = !state.visibleNodes.some((node) => node.children.length);
-      upButton.disabled = prevLevelButton.disabled;
+      const levelView = state.showLevel && !currentNodes.includes(focus);
+      document.getElementById("levelLabel").textContent = levelView
+        ? `Level ${focus.depth + 2} of ${maxDepth + 1} · ${currentNodes.length} nodes grouped by parent`
+        : `Level ${focus.depth + 1} of ${maxDepth + 1} · ${focus.children.length} children`;
+      document.getElementById("hintLabel").textContent = levelView
+        ? "Showing the whole level · click a node to drill into it · ← back / → forward"
+        : "Click a node to open its children · ← back / → forward · click the breadcrumb to jump up";
+      backButton.disabled = histIndex === 0;
+      forwardButton.disabled = histIndex === history.length - 1;
+      homeButton.disabled = focus === root;
     }
 
-    function resetViewport() {
-      animateViewport({ scale: 1, x: 0, y: 0 }, 260);
-    }
-
-    function render(direction = 1) {
-      clear();
-      layout(state.visibleNodes);
-      renderEdges(state.visibleNodes);
-      renderNodes(state.visibleNodes, direction);
-      updateDetails();
-      resetViewport();
-    }
-
+    /* ------------------------------------------------------------------ */
+    /* Pan / zoom / drag                                                   */
+    /* ------------------------------------------------------------------ */
     function updateViewport() {
       viewport.setAttribute("transform", `translate(${state.x}, ${state.y}) scale(${state.scale})`);
+      // Fade labels out as you zoom away (Obsidian's text fade threshold).
+      const opacity = Math.max(0, Math.min(1, (state.scale - 0.55) / 0.35));
+      viewport.style.setProperty("--label-opacity", String(opacity));
     }
 
-    function animateViewport(target, duration = 180) {
-      cancelAnimationFrame(state.animationFrame);
-      const start = { scale: state.scale, x: state.x, y: state.y };
-      const startedAt = performance.now();
-      const ease = (value) => 1 - Math.pow(1 - value, 3);
+    function worldFromEvent(event) {
+      const rect = svg.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left - state.x) / state.scale,
+        y: (event.clientY - rect.top - state.y) / state.scale
+      };
+    }
 
-      function tick(now) {
-        const progress = Math.min(1, (now - startedAt) / duration);
-        const eased = ease(progress);
-        state.scale = start.scale + (target.scale - start.scale) * eased;
-        state.x = start.x + (target.x - start.x) * eased;
-        state.y = start.y + (target.y - start.y) * eased;
-        updateViewport();
-
-        if (progress < 1) {
-          state.animationFrame = requestAnimationFrame(tick);
-        }
-      }
-
-      state.animationFrame = requestAnimationFrame(tick);
+    function onNodePointerDown(event, node) {
+      event.stopPropagation();
+      state.draggedNode = node;
+      state.movedDuringDrag = false;
+      state.dragStartWorld = worldFromEvent(event);
+      node.fx = node.x;
+      node.fy = node.y;
+      svg.classList.add("grabbing");
+      svg.setPointerCapture(event.pointerId);
+      reheat(0.3);
     }
 
     svg.addEventListener("wheel", (event) => {
       event.preventDefault();
-      const direction = event.deltaY > 0 ? -1 : 1;
-      const nextScale = Math.min(4, Math.max(0.45, state.scale + direction * 0.16));
       const rect = svg.getBoundingClientRect();
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
+      const factor = event.deltaY > 0 ? 0.88 : 1.14;
+      const nextScale = Math.min(4, Math.max(0.3, state.scale * factor));
       const worldX = (px - state.x) / state.scale;
       const worldY = (py - state.y) / state.scale;
-      animateViewport({
-        scale: nextScale,
-        x: px - worldX * nextScale,
-        y: py - worldY * nextScale
-      }, 130);
+      state.scale = nextScale;
+      state.x = px - worldX * nextScale;
+      state.y = py - worldY * nextScale;
+      updateViewport();
     }, { passive: false });
 
     svg.addEventListener("pointerdown", (event) => {
-      state.dragging = true;
-      state.dragStarted = false;
+      state.panning = true;
       state.lastPointer = { x: event.clientX, y: event.clientY };
+      svg.classList.add("grabbing");
       svg.setPointerCapture(event.pointerId);
     });
 
     svg.addEventListener("pointermove", (event) => {
-      if (!state.dragging || !state.lastPointer) {
+      if (state.draggedNode) {
+        const world = worldFromEvent(event);
+        state.draggedNode.fx = world.x;
+        state.draggedNode.fy = world.y;
+        const moved = Math.abs(world.x - state.dragStartWorld.x)
+          + Math.abs(world.y - state.dragStartWorld.y);
+        if (moved > 3) {
+          state.movedDuringDrag = true;
+        }
+        reheat(0.3);
         return;
       }
-
-      const dx = event.clientX - state.lastPointer.x;
-      const dy = event.clientY - state.lastPointer.y;
-      if (Math.abs(dx) + Math.abs(dy) > 1) {
-        state.dragStarted = true;
+      if (state.panning && state.lastPointer) {
+        state.x += event.clientX - state.lastPointer.x;
+        state.y += event.clientY - state.lastPointer.y;
+        state.lastPointer = { x: event.clientX, y: event.clientY };
+        updateViewport();
       }
-      state.x += dx;
-      state.y += dy;
-      state.lastPointer = { x: event.clientX, y: event.clientY };
-      updateViewport();
     });
 
-    svg.addEventListener("pointerup", () => {
-      if (state.dragStarted) {
-        state.suppressClickUntil = performance.now() + 220;
+    function endPointer() {
+      if (state.draggedNode) {
+        const node = state.draggedNode;
+        node.fx = null;
+        node.fy = null;
+        if (!state.movedDuringDrag) {
+          handleNodeClick(node);
+        } else {
+          reheat(0.4);
+        }
+        state.draggedNode = null;
       }
-      state.dragging = false;
+      state.panning = false;
       state.lastPointer = null;
-      setTimeout(() => {
-        state.dragStarted = false;
-      }, 0);
-    });
+      svg.classList.remove("grabbing");
+    }
 
-    prevLevelButton.addEventListener("click", showPreviousLevel);
-    nextLevelButton.addEventListener("click", showNextLevel);
-    upButton.addEventListener("click", showPreviousLevel);
+    svg.addEventListener("pointerup", endPointer);
+    svg.addEventListener("pointercancel", endPointer);
+
+    function toggleLevelView() {
+      state.showLevel = !state.showLevel;
+      levelToggleButton.setAttribute("aria-pressed", String(state.showLevel));
+      levelToggleButton.classList.toggle("active", state.showLevel);
+      levelToggleButton.textContent = state.showLevel ? "Siblings: on" : "Siblings: off";
+      buildGraph();
+    }
+
+    levelToggleButton.addEventListener("click", toggleLevelView);
+    backButton.addEventListener("click", goBack);
+    forwardButton.addEventListener("click", goForward);
     homeButton.addEventListener("click", goHome);
+    resetButton.addEventListener("click", resetView);
     window.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowLeft") {
-        showPreviousLevel();
-      }
-      if (event.key === "ArrowRight") {
-        showNextLevel();
+      if (event.key === "ArrowLeft" || event.key === "Backspace") {
+        event.preventDefault();
+        goBack();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goForward();
+      } else if (event.key === "Escape") {
+        goHome();
       }
     });
-    window.addEventListener("resize", () => render(0));
+    window.addEventListener("resize", () => reheat(0.5));
 
-    render();
+    /* ------------------------------------------------------------------ */
+    /* Boot                                                                */
+    /* ------------------------------------------------------------------ */
+    updateViewport();
+    buildGraph();
+    requestAnimationFrame(frame);
   </script>
 </body>
 </html>
