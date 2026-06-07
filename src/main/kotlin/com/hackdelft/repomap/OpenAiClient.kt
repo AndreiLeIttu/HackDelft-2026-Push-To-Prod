@@ -63,7 +63,7 @@ object OpenAiClient {
 
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(ENDPOINT))
-                .timeout(Duration.ofSeconds(90))
+                .timeout(Duration.ofSeconds(120))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer $key")
                 .POST(HttpRequest.BodyPublishers.ofString(Gson().toJson(payload)))

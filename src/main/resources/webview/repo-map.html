@@ -310,6 +310,7 @@
         <div id="selectedKind" class="kind"></div>
         <p id="selectedParent" class="hint"></p>
         <p id="selectedSummary"></p>
+        <button id="showDeps" class="button hidden" type="button">Show dependencies →</button>
         <p id="hint" class="hint"></p>
         <div class="stats">
           <span id="nodeCount"></span>
@@ -332,6 +333,7 @@
     const fitButton = document.getElementById("fit");
     const backButton = document.getElementById("back");
     const detail = document.getElementById("detail");
+    const showDeps = document.getElementById("showDeps");
 
     svg.appendChild(viewport);
     viewport.appendChild(linksLayer);
@@ -390,6 +392,7 @@
     let overviewLevel = 1;          // depth band shown in overview (1 = groups); or "all"
     let focusPath = null;
     let focusName = null;
+    const expanded = new Set(); // paths of groups whose children are shown (click to expand)
 
     const nodes = [];
     const links = [];
@@ -424,33 +427,36 @@
       nodes.length = 0;
       links.length = 0;
 
-      function recurse(node, depth, parentEntry) {
-        const isLeaf = !(node.children && node.children.length);
-        // Show nodes exactly at this level, plus any class shallower than it (a class can't
-        // be subdivided, so it must still appear at deeper levels). => deepest level = all classes.
-        const visible = depth >= 1 && (
-          overviewLevel === "all" ||
-          depth === overviewLevel ||
-          (depth < overviewLevel && isLeaf)
-        );
-        let entry = parentEntry;
-        if (visible) {
-          entry = { ...node, depth, children: node.children || [], side: "tree" };
-          nodes.push(entry);
-          if (overviewLevel === "all" && parentEntry) {
-            links.push({ source: parentEntry, target: entry, dep: false });
-          }
+      // Top-level areas are always shown. A group's children appear only when it is expanded
+      // (click to expand/collapse), so the node count grows gradually instead of exploding.
+      (repoTree.children || []).forEach((top) => addNode(top, 1, null));
+
+      function addNode(node, depth, parentEntry) {
+        const entry = { ...node, depth, children: node.children || [], side: "tree" };
+        nodes.push(entry);
+        if (parentEntry) {
+          links.push({ source: parentEntry, target: entry, dep: false });
         }
-        // Stop descending once we reach the selected level (in band mode).
-        if (overviewLevel === "all" || depth < overviewLevel) {
-          (node.children || []).forEach((child) =>
-            recurse(child, depth + 1, overviewLevel === "all" ? entry : null)
-          );
+        if (expanded.has(node.path)) {
+          (node.children || []).forEach((child) => addNode(child, depth + 1, entry));
         }
       }
 
-      recurse(repoTree, 0, null);
       addOverviewDependencyLinks();
+    }
+
+    // Expands every group down to the given level (used by the Detail dropdown / scroll).
+    // Level 1 = collapsed (areas only); "all" = fully expanded.
+    function expandToLevel(level) {
+      expanded.clear();
+      if (level === 1) return;
+      (repoTree.children || []).forEach((top) => walk(top, 1));
+      function walk(node, depth) {
+        if (level === "all" || depth < level) {
+          expanded.add(node.path);
+          (node.children || []).forEach((child) => walk(child, depth + 1));
+        }
+      }
     }
 
     // Aggregate class-to-class dependencies up to whichever nodes are currently visible:
@@ -617,6 +623,10 @@
         linksLayer.appendChild(path);
       });
 
+      // Count names so we can disambiguate duplicates (e.g. many "Handler"/"Result" classes).
+      const nameCounts = {};
+      nodes.forEach((n) => { nameCounts[n.name] = (nameCounts[n.name] || 0) + 1; });
+
       nodes.forEach((node) => {
         const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
         group.setAttribute("class", "node");
@@ -638,7 +648,14 @@
         label.setAttribute("x", "0");
         label.setAttribute("y", "30");
         label.setAttribute("text-anchor", "middle");
-        label.textContent = node.name;
+        // Disambiguate duplicate class names by appending the parent feature/folder.
+        let labelText = node.name;
+        if (node.kind === "class" && nameCounts[node.name] > 1) {
+          const segs = (node.path || "").split(/[.\/]/).filter(Boolean);
+          const parent = segs.length >= 2 ? segs[segs.length - 2] : "";
+          if (parent && parent !== node.name) labelText = node.name + " · " + parent;
+        }
+        label.textContent = labelText;
 
         const tooltip = document.createElementNS("http://www.w3.org/2000/svg", "title");
         const groupName = groupNameFor(node);
@@ -669,10 +686,23 @@
     }
 
     function onNodeClick(node) {
-      if (view === "overview" && node.kind === "module") {
-        enterFocus(node);
+      if (view === "focus") { selectNode(node); return; }
+      if (node.children && node.children.length) {
+        // Toggle expansion: reveal/hide just this group's children.
+        if (expanded.has(node.path)) expanded.delete(node.path);
+        else expanded.add(node.path);
+        render();
+        selectByPath(node.path);
       } else {
         selectNode(node);
+      }
+    }
+
+    function selectByPath(path) {
+      const found = nodes.find((n) => n.path === path);
+      if (found) {
+        state.selected = found;
+        updateSelection();
       }
     }
 
@@ -729,14 +759,16 @@
       document.getElementById("selectedSummary").textContent =
         sel ? (sel.summary || "No summary available yet.") : "";
 
+      const showDepsVisible = view === "overview" && sel && sel.kind === "module";
+      showDeps.classList.toggle("hidden", !showDepsVisible);
+
       const hint = document.getElementById("hint");
       if (view === "overview") {
         hint.textContent =
-          "Scroll: change level · Ctrl+scroll: zoom · click a group to drill in. " +
-          repoEdges.length + " dependencies detected project-wide.";
+          "Click a group to expand/collapse · scroll to expand more levels · Ctrl+scroll to zoom.";
       } else {
         hint.textContent =
-          "Scroll to zoom. Arrows show dependencies in both directions between this group and the rest of the project.";
+          "Arrows show dependencies in both directions between this group and the rest of the project.";
       }
 
       document.getElementById("nodeCount").textContent = `${nodes.length} nodes`;
@@ -772,8 +804,10 @@
       if (view === "focus") {
         exitFocus();
       } else {
-        fitToScreen();
-        updateSelection();
+        expanded.clear();
+        overviewLevel = treeDepth >= 1 ? 1 : "all";
+        detail.value = String(overviewLevel);
+        render();
       }
     }
 
@@ -783,8 +817,13 @@
     backButton.addEventListener("click", exitFocus);
     detail.addEventListener("change", () => {
       overviewLevel = detail.value === "all" ? "all" : Number(detail.value);
+      expandToLevel(overviewLevel);
       if (view === "focus") exitFocus();
       else render();
+    });
+
+    showDeps.addEventListener("click", () => {
+      if (state.selected) enterFocus(state.selected);
     });
 
     function zoomAt(event) {
@@ -808,6 +847,7 @@
       if (next === overviewLevel) return;
       overviewLevel = next;
       detail.value = String(next);
+      expandToLevel(next);
       render();
     }
 

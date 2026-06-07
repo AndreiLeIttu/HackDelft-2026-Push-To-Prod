@@ -35,10 +35,13 @@ object      LlmGrouping {
         "human-friendly names (e.g. \"Order Checkout\", \"Authentication\", \"Database / " +
         "Persistence\"). Every class appears in exactly one leaf group. Respond with JSON only."
 
+    /** Changes whenever the prompt changes, so the cache invalidates on prompt edits. */
+    fun promptVersion(): Int = SYSTEM.hashCode()
+
     fun build(project: Project, signatures: List<ClassSignature>): RepoTreeNode? {
         if (signatures.isEmpty()) return null
         val limited = signatures.take(MAX_CLASSES)
-        val known = limited.associateBy { it.fqn }
+        val byFqn = limited.associateBy { it.fqn }
 
         val prompt = userPrompt(limited)
         DebugDump.write("repo-map-llm-prompt.txt", "SYSTEM:\n$SYSTEM\n\nUSER:\n$prompt")
@@ -52,7 +55,7 @@ object      LlmGrouping {
 
             val assigned = HashSet<String>()
             val groups = groupsArray
-                .mapNotNull { convert(it.asJsonObject, known, assigned, "") }
+                .mapNotNull { convert(it.asJsonObject, limited, byFqn, assigned, "") }
                 .filter { it.classCount > 0 }
                 .sortedByDescending { it.classCount }
                 .toMutableList()
@@ -88,7 +91,8 @@ object      LlmGrouping {
 
     private fun convert(
         json: JsonObject,
-        known: Map<String, ClassSignature>,
+        list: List<ClassSignature>,
+        byFqn: Map<String, ClassSignature>,
         assigned: MutableSet<String>,
         parentPath: String
     ): RepoTreeNode? {
@@ -97,14 +101,13 @@ object      LlmGrouping {
         val summary = json.get("summary")?.takeIf { !it.isJsonNull }?.asString
 
         val childGroups = json.getAsJsonArray("children")?.mapNotNull {
-            if (it.isJsonObject) convert(it.asJsonObject, known, assigned, path) else null
+            if (it.isJsonObject) convert(it.asJsonObject, list, byFqn, assigned, path) else null
         } ?: emptyList()
 
         val classLeaves = json.getAsJsonArray("classes")?.mapNotNull { element ->
-            val fqn = element.takeIf { !it.isJsonNull }?.asString ?: return@mapNotNull null
-            val signature = known[fqn] ?: return@mapNotNull null
-            if (!assigned.add(fqn)) return@mapNotNull null
-            classLeaf(fqn, signature.name)
+            val signature = resolveClass(element, list, byFqn) ?: return@mapNotNull null
+            if (!assigned.add(signature.fqn)) return@mapNotNull null
+            classLeaf(signature.fqn, signature.name)
         } ?: emptyList()
 
         val kids = childGroups + classLeaves
@@ -121,6 +124,22 @@ object      LlmGrouping {
         )
     }
 
+    /** Resolves a class reference that may be a 1-based index number or a fully-qualified name. */
+    private fun resolveClass(
+        element: com.google.gson.JsonElement,
+        list: List<ClassSignature>,
+        byFqn: Map<String, ClassSignature>
+    ): ClassSignature? {
+        if (element.isJsonNull) return null
+        val index = if (element.isJsonPrimitive && element.asJsonPrimitive.isNumber) {
+            element.asInt
+        } else {
+            element.asString.trim().toIntOrNull()
+        }
+        if (index != null) return list.getOrNull(index - 1)
+        return byFqn[element.asString]
+    }
+
     private fun classLeaf(fqn: String, name: String) = RepoTreeNode(
         name = name,
         kind = "class",
@@ -130,16 +149,18 @@ object      LlmGrouping {
     )
 
     private fun userPrompt(signatures: List<ClassSignature>): String = buildString {
-        appendLine("Group these classes. Output JSON of exactly this shape:")
-        appendLine("""{"groups":[{"name":"...","summary":"...","children":[ ...same shape... ],"classes":["<fqn>", ...]}]}""")
+        appendLine("Group the numbered classes below. Output JSON of exactly this shape:")
+        appendLine("""{"groups":[{"name":"...","summary":"...","children":[ ...same shape... ],"classes":[<class numbers>]}]}""")
         appendLine("Rules:")
-        appendLine("- Every class fqn listed below must appear in exactly one leaf group's \"classes\".")
+        appendLine("- Reference each class by its NUMBER (the integer in brackets), NOT its name. \"classes\" must contain integers only.")
+        appendLine("- Every class number below must appear in exactly one leaf group's \"classes\".")
         appendLine("- Use as many or as few groups and levels as the project naturally needs; don't force a count (2 groups is fine if that fits).")
         appendLine("- Put classes only inside leaf groups; each level should be clearly coarser than the one below it.")
         appendLine("- Use \"children\" for sub-groups where it helps. Group/name by responsibility/use-case.")
         appendLine()
-        appendLine("Classes (fqn | kind | methods | fields | extends/implements):")
-        for (s in signatures) {
+        appendLine("Classes ([n] fqn | kind | methods | fields | extends/implements):")
+        signatures.forEachIndexed { i, s ->
+            append('[').append(i + 1).append("] ")
             append(s.fqn).append(" | ").append(s.kind)
             append(" | methods: ").append(s.methods.joinToString(",").ifEmpty { "-" })
             append(" | fields: ").append(s.fields.joinToString(",").ifEmpty { "-" })

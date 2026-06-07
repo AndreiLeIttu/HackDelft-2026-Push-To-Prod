@@ -129,6 +129,36 @@ object RepoTreeBuilder {
         )
     }
 
+    /**
+     * Builds a purely structural tree (grouped by package/folder path) from pre-extracted
+     * signatures. Used for non-JVM projects where we only have text-scanned types.
+     */
+    fun fromSignatures(project: Project, signatures: List<ClassSignature>): RepoTreeNode {
+        val root = PkgTrie()
+        for (signature in signatures) root.insert(signature.packageName, signature.name)
+
+        var effective = root
+        val basePackage = StringBuilder()
+        while (effective.classNames.isEmpty() && effective.children.size == 1) {
+            val (segment, child) = effective.children.entries.first()
+            if (basePackage.isNotEmpty()) basePackage.append('.')
+            basePackage.append(segment)
+            effective = child
+        }
+
+        val basePath = basePackage.toString()
+        val children = buildChildren(effective, basePath)
+        val total = effective.totalClassCount()
+        return RepoTreeNode(
+            name = project.name.ifBlank { "Project" },
+            kind = "repository",
+            summary = "Structural overview — $total types · ${children.count { it.kind == "module" }} groups",
+            path = basePath,
+            classCount = total,
+            children = children
+        )
+    }
+
     private fun collectClasses(project: Project): List<ClassInfo> {
         val result = mutableListOf<ClassInfo>()
         val index = ProjectFileIndex.getInstance(project)
