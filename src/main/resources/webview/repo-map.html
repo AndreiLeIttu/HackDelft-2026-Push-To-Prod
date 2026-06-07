@@ -389,6 +389,9 @@
         // Total classes in this subtree (from the backend) — the node's weight.
         // Falls back to undefined for the built-in sample data.
         classCount: node.classCount,
+        // Fully-qualified name of a class leaf (backend `path`), used to open the
+        // file in the IDE on click. Empty/absent for groups and sample data.
+        fqn: node.path,
         parent,
         depth,
         index,
@@ -809,7 +812,7 @@
     }
 
     // Clicking: open a node's children (drill in), re-center on the hub, or
-    // just select a leaf to read its summary. Going *up* is done with the
+    // open a leaf (a class/file) in the IDE editor. Going *up* is done with the
     // arrows or the clickable breadcrumb, not by clicking the hub.
     function handleNodeClick(node) {
       if (node === focus) {
@@ -823,8 +826,24 @@
         setFocus(node);
         return;
       }
+      // Leaf: select it, then ask the IDE to open the underlying file.
       state.selected = node;
       updateDetails();
+      openLeafInIde(node);
+    }
+
+    // Bridge to the IDE (injected by the plugin as window.openInIde). A leaf that
+    // maps to a class carries its fully-qualified name in `fqn`; send that so the
+    // plugin can resolve and open the source file. No-op in a plain browser.
+    function openLeafInIde(node) {
+      if (!node.fqn || typeof window.openInIde !== "function") {
+        return;
+      }
+      try {
+        window.openInIde(node.fqn);
+      } catch (error) {
+        /* bridge not available (e.g. standalone preview) — ignore */
+      }
     }
 
     // Jump straight to any ancestor (used by the breadcrumb), keeping the
