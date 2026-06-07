@@ -30,7 +30,14 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
                 RepoMapBuilder.build(project)
             } catch (t: Throwable) {
                 log.warn("Repo map build failed", t)
-                RepoMapBuilder.MapData(RepoTreeSamples.sampleProjectJson(project.name), "[]")
+                RepoMapBuilder.MapData(
+                    RepoTreeNode(
+                        name = "Repo Map failed",
+                        kind = "repository",
+                        summary = "Analysis threw: ${t.message ?: t.javaClass.simpleName}. See the IDE log (Help ▸ Show Log)."
+                    ).toJson(),
+                    "[]"
+                )
             }
             ApplicationManager.getApplication().invokeLater {
                 try {

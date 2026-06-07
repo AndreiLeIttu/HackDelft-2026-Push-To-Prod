@@ -26,7 +26,10 @@ object RepoMapBuilder {
         }
 
         if (signatures.isEmpty()) {
-            return MapData(RepoTreeSamples.sampleProjectJson(project.name), "[]")
+            return MapData(
+                errorNode("No classes found", "No source classes were detected in this project to map.").toJson(),
+                "[]"
+            )
         }
 
         // 2. Reuse a cached result when the class set + grouping mode are unchanged — avoids
@@ -41,18 +44,36 @@ object RepoMapBuilder {
             emptyList()
         }
 
-        // 4. Build the tree (AI grouping when configured; deterministic fallback otherwise).
-        val tree = if (OpenAiClient.isConfigured()) {
-            LlmGrouping.build(project, signatures) ?: fallbackTree(project, psiSignatures, signatures)
-        } else {
-            fallbackTree(project, psiSignatures, signatures)
+        // 4. Build the tree with the LLM ONLY — no heuristic/sample fallback (per request).
+        //    Any failure surfaces as a visible error node and is NOT cached, so a transient
+        //    problem (network, rate limit) clears itself on the next open.
+        if (!OpenAiClient.isConfigured()) {
+            return MapData(
+                errorNode(
+                    "No OpenAI key found",
+                    "Set OPENAI_API_KEY, the openai.api.key system property, or ~/.repomap/openai_key, then reopen the Repo Map."
+                ).toJson(),
+                "[]"
+            )
         }
 
-        val data = if (tree.children.isEmpty()) {
-            MapData(RepoTreeSamples.sampleProjectJson(project.name), "[]")
-        } else {
-            MapData(tree.toJson(), RepoDependencyAnalyzer.toJson(edges))
+        val tree = LlmGrouping.build(project, signatures)
+            ?: return MapData(
+                errorNode(
+                    "AI grouping failed",
+                    "The OpenAI request returned no usable grouping. Check the key, network connectivity, and the IDE log (Help ▸ Show Log)."
+                ).toJson(),
+                "[]"
+            )
+
+        if (tree.children.isEmpty()) {
+            return MapData(
+                errorNode("AI grouping was empty", "The model returned a tree with no groups. Reopen the Repo Map to retry.").toJson(),
+                "[]"
+            )
         }
+
+        val data = MapData(tree.toJson(), RepoDependencyAnalyzer.toJson(edges))
 
         RepoMapCache.put(cacheKey, data)
         DebugDump.write("repo-map-tree.json", "{\"tree\":${data.treeJson},\"edges\":${data.edgesJson}}")
@@ -66,17 +87,9 @@ object RepoMapBuilder {
         return "${project.name}-$mode-$classesHash"
     }
 
-    /** Deterministic tree: JVM heuristic categories when available, else structural-by-folder. */
-    private fun fallbackTree(
-        project: Project,
-        psiSignatures: List<ClassSignature>,
-        signatures: List<ClassSignature>
-    ): RepoTreeNode =
-        if (psiSignatures.isNotEmpty()) {
-            inSmart(project) { RepoTreeBuilder.build(project) }
-        } else {
-            RepoTreeBuilder.fromSignatures(project, signatures)
-        }
+    /** A visible error/status node shown in place of a tree (no silent fallback). */
+    private fun errorNode(title: String, detail: String): RepoTreeNode =
+        RepoTreeNode(name = title, kind = "repository", summary = detail)
 
     /**
      * Cancellable read action that runs once the project is in smart mode. If a write action

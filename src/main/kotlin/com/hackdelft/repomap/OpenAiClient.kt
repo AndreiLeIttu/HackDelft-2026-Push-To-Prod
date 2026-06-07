@@ -21,7 +21,7 @@ object OpenAiClient {
 
     private val LOG = logger<OpenAiClient>()
     private const val ENDPOINT = "https://api.openai.com/v1/chat/completions"
-    private const val MODEL = "gpt-4o-mini"
+    private const val MODEL = "gpt-4o"
 
     /**
      * Resolves the key, in order: OPENAI_API_KEY env var, `openai.api.key` system property,
