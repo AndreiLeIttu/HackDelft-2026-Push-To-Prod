@@ -392,6 +392,7 @@
         // Fully-qualified name of a class leaf (backend `path`), used to open the
         // file in the IDE on click. Empty/absent for groups and sample data.
         fqn: node.path,
+        file: node.file,
         parent,
         depth,
         index,
@@ -836,11 +837,18 @@
     // maps to a class carries its fully-qualified name in `fqn`; send that so the
     // plugin can resolve and open the source file. No-op in a plain browser.
     function openLeafInIde(node) {
-      if (!node.fqn || typeof window.openInIde !== "function") {
+      if (typeof window.openInIde !== "function") {
+        return;
+      }
+      const fqn = node.fqn || "";
+      const file = node.file || "";
+      if (!fqn && !file) {
         return;
       }
       try {
-        window.openInIde(node.fqn);
+        // Send "fqn|file": the plugin opens the Java class (line-precise) if it resolves,
+        // otherwise opens the source file directly — which works for any language.
+        window.openInIde(fqn + "|" + file);
       } catch (error) {
         /* bridge not available (e.g. standalone preview) — ignore */
       }

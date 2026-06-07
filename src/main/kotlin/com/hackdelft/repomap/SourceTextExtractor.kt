@@ -69,7 +69,7 @@ object SourceTextExtractor {
             val kind = match.groupValues[1]
             val name = match.groupValues[2]
             val fqn = if (pkg.isEmpty()) name else "$pkg.$name"
-            out += ClassSignature(fqn, pkg, name, kind, emptyList(), emptyList(), emptyList())
+            out += ClassSignature(fqn, pkg, name, kind, emptyList(), emptyList(), emptyList(), file.path)
         }
     }
 }

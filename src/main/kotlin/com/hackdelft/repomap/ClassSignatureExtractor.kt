@@ -17,7 +17,8 @@ data class ClassSignature(
     val kind: String,
     val methods: List<String>,
     val fields: List<String>,
-    val supertypes: List<String>
+    val supertypes: List<String>,
+    val file: String = ""
 )
 
 object ClassSignatureExtractor {
@@ -93,6 +94,7 @@ object ClassSignatureExtractor {
             .take(6)
             .toList()
 
-        return ClassSignature(fqn, packageName, name, kind, methods, fields, supertypes)
+        val file = cls.containingFile?.virtualFile?.path ?: ""
+        return ClassSignature(fqn, packageName, name, kind, methods, fields, supertypes, file)
     }
 }

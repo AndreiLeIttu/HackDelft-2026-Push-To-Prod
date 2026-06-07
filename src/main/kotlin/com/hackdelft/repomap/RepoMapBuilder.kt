@@ -84,7 +84,8 @@ object RepoMapBuilder {
     private fun cacheKey(project: Project, signatures: List<ClassSignature>): String {
         val mode = if (OpenAiClient.isConfigured()) "ai${LlmGrouping.promptVersion()}" else "heuristic"
         val classesHash = signatures.map { it.fqn }.sorted().joinToString("\n").hashCode()
-        return "${project.name}-$mode-$classesHash"
+        // Bump "v2" whenever the tree JSON format changes so stale caches are ignored.
+        return "${project.name}-v2-$mode-$classesHash"
     }
 
     /** A visible error/status node shown in place of a tree (no silent fallback). */

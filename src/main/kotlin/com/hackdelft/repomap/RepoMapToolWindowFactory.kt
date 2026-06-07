@@ -3,7 +3,9 @@ package com.hackdelft.repomap
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.psi.JavaPsiFacade
@@ -83,11 +85,17 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
      * back on the EDT. Project scope is tried first (the user's own code), then all scope.
      */
     private fun openInIde(project: Project, request: String) {
-        val fqn = request.trim()
-        if (fqn.isEmpty()) return
+        val raw = request.trim()
+        if (raw.isEmpty()) return
+
+        // The webview sends "fqn|file". Prefer resolving the Java class (line-precise);
+        // fall back to opening the source file directly (works for any language, e.g. C#).
+        val separator = raw.indexOf('|')
+        val fqn = (if (separator >= 0) raw.substring(0, separator) else raw).trim()
+        val file = (if (separator >= 0) raw.substring(separator + 1) else "").trim()
 
         AppExecutorUtil.getAppExecutorService().execute {
-            val target: PsiClass? = try {
+            val target: PsiClass? = if (fqn.isEmpty()) null else try {
                 ReadAction.nonBlocking(Callable {
                     val facade = JavaPsiFacade.getInstance(project)
                     val inProject = facade.findClass(fqn, GlobalSearchScope.projectScope(project))
@@ -99,15 +107,30 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
                 null
             }
 
-            if (target == null) {
-                log.info("Repo Map: no navigable class found for '$fqn'")
+            if (target != null) {
+                ApplicationManager.getApplication().invokeLater {
+                    try {
+                        target.navigate(true)
+                    } catch (t: Throwable) {
+                        log.warn("Repo Map: failed to open '$fqn'", t)
+                    }
+                }
+                return@execute
+            }
+
+            // Fall back to opening the file by path.
+            val virtualFile = if (file.isEmpty()) null else {
+                LocalFileSystem.getInstance().findFileByPath(file.replace('\\', '/'))
+            }
+            if (virtualFile == null) {
+                log.info("Repo Map: no navigable target for '$fqn' / '$file'")
                 return@execute
             }
             ApplicationManager.getApplication().invokeLater {
                 try {
-                    target.navigate(true)
+                    FileEditorManager.getInstance(project).openFile(virtualFile, true)
                 } catch (t: Throwable) {
-                    log.warn("Repo Map: failed to open '$fqn'", t)
+                    log.warn("Repo Map: failed to open file '$file'", t)
                 }
             }
         }

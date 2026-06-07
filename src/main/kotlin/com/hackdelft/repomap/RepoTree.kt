@@ -20,6 +20,7 @@ data class RepoTreeNode(
     val summary: String,
     val path: String = "",
     val classCount: Int = 0,
+    val file: String = "",
     val children: List<RepoTreeNode> = emptyList()
 ) {
     /** Serializes this node (and all descendants) into the JSON the webview expects. */
@@ -32,6 +33,7 @@ data class RepoTreeNode(
         sb.append(",\"summary\":").append(Json.str(summary))
         sb.append(",\"path\":").append(Json.str(path))
         sb.append(",\"classCount\":").append(classCount)
+        if (file.isNotEmpty()) sb.append(",\"file\":").append(Json.str(file))
         if (children.isNotEmpty()) {
             sb.append(",\"children\":[")
             children.forEachIndexed { index, child ->

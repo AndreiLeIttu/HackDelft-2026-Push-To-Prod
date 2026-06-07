@@ -69,7 +69,7 @@ object      LlmGrouping {
                     summary = "${leftovers.size} unclassified classes",
                     path = "Other",
                     classCount = leftovers.size,
-                    children = leftovers.sortedBy { it.name }.map { classLeaf(it.fqn, it.name) }
+                    children = leftovers.sortedBy { it.name }.map { classLeaf(it.fqn, it.name, it.file) }
                 )
             }
 
@@ -107,7 +107,7 @@ object      LlmGrouping {
         val classLeaves = json.getAsJsonArray("classes")?.mapNotNull { element ->
             val signature = resolveClass(element, list, byFqn) ?: return@mapNotNull null
             if (!assigned.add(signature.fqn)) return@mapNotNull null
-            classLeaf(signature.fqn, signature.name)
+            classLeaf(signature.fqn, signature.name, signature.file)
         } ?: emptyList()
 
         val kids = childGroups + classLeaves
@@ -140,12 +140,13 @@ object      LlmGrouping {
         return byFqn[element.asString]
     }
 
-    private fun classLeaf(fqn: String, name: String) = RepoTreeNode(
+    private fun classLeaf(fqn: String, name: String, file: String = "") = RepoTreeNode(
         name = name,
         kind = "class",
         summary = "Class · $fqn",
         path = fqn,
-        classCount = 1
+        classCount = 1,
+        file = file
     )
 
     private fun userPrompt(signatures: List<ClassSignature>): String = buildString {
