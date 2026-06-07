@@ -167,8 +167,8 @@
 
     .edge {
       fill: none;
-      stroke: rgba(167, 164, 184, 0.22);
-      stroke-width: 1.5;
+      stroke: rgba(167, 164, 184, 0.14);
+      stroke-width: 1.2;
       transition: opacity 200ms ease, stroke 200ms ease, stroke-width 200ms ease;
     }
 
@@ -194,6 +194,32 @@
 
     .edge-hit:hover {
       stroke: color-mix(in srgb, var(--violet) 22%, transparent);
+    }
+
+    /* Directed dependency edges: "A communicates with B". Weighted by strength
+       so weak relationships recede and strong ones read clearly. */
+    .dep-edge {
+      fill: none;
+      stroke: var(--cyan);
+      stroke-linecap: round;
+      marker-end: url(#dep-arrow);
+      transition: opacity 180ms ease, stroke-width 180ms ease;
+    }
+
+    .dep-edge.s1 { stroke-width: 1.4; opacity: 0.28; }
+    .dep-edge.s2 { stroke-width: 2.2; opacity: 0.5; }
+    .dep-edge.s3 { stroke-width: 3.2; opacity: 0.78; }
+
+    /* Hover / focus emphasis and de-emphasis (declared last so they win). */
+    .dep-edge.lit { opacity: 1; stroke-width: 3.4; }
+    .dep-edge.dim { opacity: 0.05; }
+
+    .dep-edge-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 16;
+      pointer-events: stroke;
+      cursor: pointer;
     }
 
     .bubble {
@@ -246,7 +272,7 @@
       stroke: rgba(17, 17, 19, 0.9);
       stroke-linejoin: round;
       stroke-width: 4px;
-      text-anchor: start;
+      text-anchor: middle;
       opacity: var(--label-opacity, 1);
       transition: opacity 160ms ease;
     }
@@ -316,6 +342,122 @@
       line-height: 19px;
     }
 
+    /* Dependency explanation popup. */
+    .rel-backdrop {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(8, 8, 11, 0.55);
+      backdrop-filter: blur(3px);
+      z-index: 10;
+      animation: rel-fade 140ms ease;
+    }
+
+    .rel-backdrop[hidden] {
+      display: none;
+    }
+
+    @keyframes rel-fade {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .rel-card {
+      position: relative;
+      width: min(440px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px 18px 20px;
+      background: linear-gradient(180deg, #20202a 0%, #191921 100%);
+      box-shadow: var(--shadow);
+      animation: rel-rise 160ms cubic-bezier(.2, .8, .2, 1);
+    }
+
+    @keyframes rel-rise {
+      from { transform: translateY(8px) scale(0.98); opacity: 0; }
+      to { transform: translateY(0) scale(1); opacity: 1; }
+    }
+
+    .rel-close {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 6px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .rel-close:hover {
+      color: var(--text);
+      background: var(--surface-strong);
+    }
+
+    .rel-route {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 2px 28px 10px 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .rel-node {
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--cyan) 18%, var(--surface));
+      border: 1px solid color-mix(in srgb, var(--cyan) 45%, transparent);
+    }
+
+    .rel-arrow {
+      color: var(--cyan);
+      font-size: 16px;
+    }
+
+    .rel-meta {
+      margin-bottom: 12px;
+      color: var(--subtle);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .rel-body {
+      color: var(--text);
+      font-size: 14px;
+      line-height: 21px;
+      min-height: 21px;
+    }
+
+    .rel-body.loading {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .rel-body.loading::after {
+      content: "";
+      display: inline-block;
+      width: 1em;
+      animation: rel-dots 1.2s steps(4, end) infinite;
+    }
+
+    @keyframes rel-dots {
+      0% { content: ""; }
+      25% { content: "·"; }
+      50% { content: "··"; }
+      75% { content: "···"; }
+    }
+
     @media (max-width: 700px) {
       .toolbar {
         grid-template-columns: 1fr;
@@ -368,21 +510,55 @@
         <div id="selectedKind" class="kind"></div>
         <p id="selectedSummary"></p>
       </aside>
+
+      <div id="relationPopup" class="rel-backdrop" hidden>
+        <div class="rel-card" role="dialog" aria-modal="true" aria-label="Dependency explanation">
+          <button id="relClose" class="rel-close" type="button" title="Close">×</button>
+          <div class="rel-route">
+            <span id="relSource" class="rel-node"></span>
+            <span class="rel-arrow">→</span>
+            <span id="relTarget" class="rel-node"></span>
+          </div>
+          <div id="relMeta" class="rel-meta"></div>
+          <div id="relBody" class="rel-body"></div>
+        </div>
+      </div>
     </section>
   </main>
 
   <script>
     const SVGNS = "http://www.w3.org/2000/svg";
     const repoTree = __REPO_TREE_JSON__;
+    // Class→class "uses" relationships (FQN→FQN). Empty until a real tree is built.
+    const repoEdges = __REPO_EDGES_JSON__;
     const clusterColors = ["#8b5cf6", "#22d3ee", "#34d399", "#fbbf24", "#f472b6", "#60a5fa"];
 
     const svg = document.getElementById("map");
+
+    // Arrowhead for directed dependency edges.
+    const defs = document.createElementNS(SVGNS, "defs");
+    const marker = document.createElementNS(SVGNS, "marker");
+    marker.setAttribute("id", "dep-arrow");
+    marker.setAttribute("viewBox", "0 0 10 10");
+    marker.setAttribute("refX", "9");
+    marker.setAttribute("refY", "5");
+    marker.setAttribute("markerWidth", "7");
+    marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("orient", "auto-start-reverse");
+    const markerPath = document.createElementNS(SVGNS, "path");
+    markerPath.setAttribute("d", "M0,0 L10,5 L0,10 z");
+    markerPath.setAttribute("fill", "#22d3ee");
+    marker.appendChild(markerPath);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
     const viewport = document.createElementNS(SVGNS, "g");
     const edgesLayer = document.createElementNS(SVGNS, "g");
+    const depLayer = document.createElementNS(SVGNS, "g");
     const nodesLayer = document.createElementNS(SVGNS, "g");
     viewport.setAttribute("class", "scene");
     svg.appendChild(viewport);
-    viewport.append(edgesLayer, nodesLayer);
+    viewport.append(edgesLayer, depLayer, nodesLayer);
 
     const levelToggleButton = document.getElementById("levelToggle");
     const backButton = document.getElementById("back");
@@ -442,6 +618,52 @@
     }
 
     const root = normalize(repoTree);
+
+    // Give every node the set of class FQNs in its subtree, so a class-level
+    // dependency can be mapped up to whichever visible group contains it.
+    (function fillSubtreeFqns(node) {
+      const set = new Set();
+      if (node.fqn && node.children.length === 0) {
+        set.add(node.fqn);
+      }
+      node.children.forEach((child) => {
+        fillSubtreeFqns(child);
+        child._fqns.forEach((f) => set.add(f));
+      });
+      node._fqns = set;
+    })(root);
+
+    // Aggregate the class→class "uses" edges up to the currently visible groups:
+    // for each dependency, find which visible node owns each endpoint, and bundle
+    // them into a directed group→group edge with a count and sample pairs.
+    function computeDependencyEdges() {
+      const owners = currentNodes.filter((node) => node !== focus);
+      if (owners.length < 2 || !repoEdges.length) {
+        return [];
+      }
+      const ownerOf = new Map();
+      owners.forEach((node) => node._fqns.forEach((f) => {
+        if (!ownerOf.has(f)) ownerOf.set(f, node);
+      }));
+
+      const aggregated = new Map();
+      repoEdges.forEach((dep) => {
+        const source = ownerOf.get(dep.source);
+        const target = ownerOf.get(dep.target);
+        if (!source || !target || source === target) {
+          return;
+        }
+        const key = source.id + ">" + target.id;
+        let edge = aggregated.get(key);
+        if (!edge) {
+          edge = { source, target, count: 0, pairs: [] };
+          aggregated.set(key, edge);
+        }
+        edge.count += 1;
+        if (edge.pairs.length < 12) edge.pairs.push({ s: dep.source, t: dep.target });
+      });
+      return [...aggregated.values()];
+    }
 
     function allNodes() {
       const out = [];
@@ -503,8 +725,10 @@
 
     let currentNodes = [];
     let currentEdges = [];
+    let currentDepEdges = [];  // aggregated group→group dependency edges
     let nodeEls = new Map();   // node -> { group, circle }
-    let edgeEls = [];          // { edge, path }
+    let edgeEls = [];          // { edge, path, hit }
+    let depEls = [];           // { edge, path, hit }
     let adjacency = new Map(); // node -> Set(neighbour nodes)
 
     // The nodes on the focus's own level: the focus plus its siblings.
@@ -556,11 +780,11 @@
     /* ------------------------------------------------------------------ */
     const params = {
       center: 0.012,    // pull toward the middle
-      repel: 5200,      // node-node repulsion
-      linkStrength: 0.05,
-      linkPad: 64,      // resting gap between connected nodes
-      collidePad: 10,
-      decay: 0.82,      // velocity damping
+      repel: 6400,      // node-node repulsion (roomier spacing)
+      linkStrength: 0.045,
+      linkPad: 78,      // resting gap between connected nodes
+      collidePad: 18,   // extra breathing room so nodes never crowd
+      decay: 0.84,      // velocity damping (smoother settle)
       alphaDecay: 0.014,
       alphaMin: 0.01
     };
@@ -669,6 +893,29 @@
         path.setAttribute("d", d);
         if (hit) hit.setAttribute("d", d);
       });
+      depEls.forEach(({ edge, path, hit }) => {
+        const d = dependencyPath(edge.source, edge.target);
+        path.setAttribute("d", d);
+        hit.setAttribute("d", d);
+      });
+    }
+
+    // A curved, arrowed path from the edge of one node to the edge of another.
+    // The curve keeps A→B and B→A from overlapping and reads as a "flow".
+    function dependencyPath(a, b) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const ax = a.x + ux * a.r;
+      const ay = a.y + uy * a.r;
+      const bx = b.x - ux * (b.r + 6); // leave room for the arrowhead
+      const by = b.y - uy * (b.r + 6);
+      const off = Math.min(46, len * 0.2);
+      const cx = (ax + bx) / 2 - uy * off;
+      const cy = (ay + by) / 2 + ux * off;
+      return `M ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`;
     }
 
     function frame() {
@@ -688,6 +935,9 @@
       currentEdges = visibleEdges(currentNodes);
 
       const levelView = state.showLevel && !currentNodes.includes(focus);
+      // Dependency edges are shown in the hub view only (a flat level view is
+      // already busy with sibling rings).
+      currentDepEdges = levelView ? [] : computeDependencyEdges();
       adjacency = new Map(currentNodes.map((node) => [node, new Set()]));
       if (levelView) {
         // Hovering highlights the whole sibling group, not just ring neighbours.
@@ -736,9 +986,11 @@
 
     function renderDom() {
       edgesLayer.replaceChildren();
+      depLayer.replaceChildren();
       nodesLayer.replaceChildren();
       nodeEls = new Map();
       edgeEls = [];
+      depEls = [];
 
       currentEdges.forEach((edge) => {
         const path = document.createElementNS(SVGNS, "path");
@@ -759,6 +1011,28 @@
         edgeEls.push({ edge, path, hit });
       });
 
+      // Directed dependency edges between visible groups ("A communicates with B").
+      // Weight each by how strong the relationship is, so weak ones recede.
+      const maxDepCount = currentDepEdges.reduce((m, e) => Math.max(m, e.count), 1);
+      currentDepEdges.forEach((edge) => {
+        const ratio = edge.count / maxDepCount;
+        const strength = ratio > 0.66 ? "s3" : ratio > 0.33 ? "s2" : "s1";
+
+        const path = document.createElementNS(SVGNS, "path");
+        path.setAttribute("class", "dep-edge " + strength);
+        depLayer.appendChild(path);
+
+        const hit = document.createElementNS(SVGNS, "path");
+        hit.setAttribute("class", "dep-edge-hit");
+        hit.addEventListener("pointerdown", (event) => event.stopPropagation());
+        hit.addEventListener("pointerenter", () => path.classList.add("lit"));
+        hit.addEventListener("pointerleave", () => path.classList.remove("lit"));
+        hit.addEventListener("click", () => openRelationPopup(edge));
+        depLayer.appendChild(hit);
+
+        depEls.push({ edge, path, hit });
+      });
+
       currentNodes.forEach((node) => {
         const group = document.createElementNS(SVGNS, "g");
         let className = "bubble";
@@ -773,8 +1047,8 @@
 
         const label = document.createElementNS(SVGNS, "text");
         label.setAttribute("class", "label");
-        label.setAttribute("x", String(node.r + 8));
-        label.setAttribute("y", "5");
+        label.setAttribute("x", "0");
+        label.setAttribute("y", String(node.r + 16));
         label.textContent = node.children.length
           ? `${node.name} (${node.children.length})`
           : node.name;
@@ -820,15 +1094,29 @@
       if (!focus) {
         nodeEls.forEach(({ group }) => group.classList.remove("dim", "lit"));
         edgeEls.forEach(({ path }) => path.classList.remove("dim", "lit"));
+        depEls.forEach(({ path }) => path.classList.remove("dim", "lit"));
         return;
       }
+      // Light up the hovered group and everything it connects to (containment
+      // neighbours + dependency partners); fade the rest so the relationships
+      // it participates in stand out.
       const neighbours = adjacency.get(focus) || new Set();
+      const related = new Set([focus]);
+      depEls.forEach(({ edge }) => {
+        if (edge.source === focus) related.add(edge.target);
+        if (edge.target === focus) related.add(edge.source);
+      });
       nodeEls.forEach(({ group }, node) => {
-        const lit = node === focus || neighbours.has(node);
+        const lit = node === focus || neighbours.has(node) || related.has(node);
         group.classList.toggle("lit", lit);
         group.classList.toggle("dim", !lit);
       });
       edgeEls.forEach(({ edge, path }) => {
+        const lit = edge.source === focus || edge.target === focus;
+        path.classList.toggle("lit", lit);
+        path.classList.toggle("dim", !lit);
+      });
+      depEls.forEach(({ edge, path }) => {
         const lit = edge.source === focus || edge.target === focus;
         path.classList.toggle("lit", lit);
         path.classList.toggle("dim", !lit);
@@ -924,6 +1212,78 @@
       }
       openLeafInIde(node);
     }
+
+    /* ------------------------------------------------------------------ */
+    /* Dependency "communicates with" popup                                */
+    /* ------------------------------------------------------------------ */
+    const relCache = new Map();   // edge key -> explanation text
+    let relRequestSeq = 0;
+    let relPending = null;        // { id, key }
+
+    function relKey(edge) {
+      return edge.source.id + ">" + edge.target.id;
+    }
+
+    function openRelationPopup(edge) {
+      document.getElementById("relSource").textContent = edge.source.name;
+      document.getElementById("relTarget").textContent = edge.target.name;
+      const refs = edge.count === 1 ? "1 reference" : `${edge.count} references`;
+      document.getElementById("relMeta").textContent = refs;
+      document.getElementById("relationPopup").hidden = false;
+
+      const key = relKey(edge);
+      if (relCache.has(key)) {
+        setRelationBody(relCache.get(key));
+        return;
+      }
+      setRelationBody(null); // loading
+
+      const id = ++relRequestSeq;
+      relPending = { id, key };
+      if (typeof window.explainRelation === "function") {
+        try {
+          window.explainRelation(JSON.stringify({
+            id,
+            source: edge.source.name,
+            target: edge.target.name,
+            sourceSummary: edge.source.summary || "",
+            targetSummary: edge.target.summary || "",
+            count: edge.count,
+            pairs: edge.pairs
+          }));
+          return;
+        } catch (error) {
+          /* fall through to the local summary */
+        }
+      }
+      setRelationBody(`${edge.source.name} uses ${edge.target.name} (${refs}).`);
+    }
+
+    function setRelationBody(text) {
+      const body = document.getElementById("relBody");
+      if (text === null) {
+        body.classList.add("loading");
+        body.textContent = "Explaining";
+      } else {
+        body.classList.remove("loading");
+        body.textContent = text;
+      }
+    }
+
+    function closeRelationPopup() {
+      document.getElementById("relationPopup").hidden = true;
+      relPending = null;
+    }
+
+    // Called by the plugin once the AI explanation is ready.
+    window.onRelationExplained = function (id, text) {
+      if (!relPending || relPending.id !== id) {
+        return;
+      }
+      const clean = (text || "").trim() || "No explanation available.";
+      relCache.set(relPending.key, clean);
+      setRelationBody(clean);
+    };
 
     // Jump straight to any ancestor (used by the breadcrumb), keeping the
     // forward history intact when the target is already on the visited path.
@@ -1127,7 +1487,17 @@
         try { window.clearHighlights(); } catch (error) { /* bridge absent — ignore */ }
       }
     });
+    document.getElementById("relClose").addEventListener("click", closeRelationPopup);
+    document.getElementById("relationPopup").addEventListener("click", (event) => {
+      // Click on the dimmed backdrop (outside the card) closes the popup.
+      if (event.target === event.currentTarget) closeRelationPopup();
+    });
     window.addEventListener("keydown", (event) => {
+      const popupOpen = !document.getElementById("relationPopup").hidden;
+      if (event.key === "Escape" && popupOpen) {
+        closeRelationPopup();
+        return;
+      }
       if (event.key === "ArrowLeft" || event.key === "Backspace") {
         event.preventDefault();
         goBack();

@@ -1,5 +1,7 @@
 package com.hackdelft.repomap
 
+import com.google.gson.Gson
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
@@ -61,12 +63,20 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
             ApplicationManager.getApplication().invokeLater { clearActiveHighlights() }
             null
         }
+        // Explain a dependency edge: the AI describes how two groups communicate.
+        // Answered asynchronously by calling back into window.onRelationExplained.
+        val relationQuery = JBCefJSQuery.create(browser as JBCefBrowserBase)
+        relationQuery.addHandler { request ->
+            explainRelation(browser, request)
+            null
+        }
         // Define the bridges after every page load (loadHTML runs twice:
         // the loading placeholder, then the real tree).
         val bridgeJs =
             "window.openInIde = function(p) { ${openQuery.inject("p")} };" +
             "window.explainInIde = function(p) { ${explainQuery.inject("p")} };" +
-            "window.clearHighlights = function() { ${clearQuery.inject("''")} };"
+            "window.clearHighlights = function() { ${clearQuery.inject("''")} };" +
+            "window.explainRelation = function(p) { ${relationQuery.inject("p")} };"
         browser.jbCefClient.addLoadHandler(object : CefLoadHandlerAdapter() {
             override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                 if (cefBrowser != null) {
@@ -283,6 +293,47 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
             }
         }
         activeHighlights.clear()
+    }
+
+    /**
+     * Asks the AI how two groups communicate, then pushes the answer back into the webview
+     * via window.onRelationExplained(id, text). Runs off the EDT; on any failure it returns a
+     * plain computed summary so the popup always shows something.
+     */
+    private fun explainRelation(browser: JBCefBrowser, payload: String) {
+        val request = try {
+            JsonParser.parseString(payload).asJsonObject
+        } catch (t: Throwable) {
+            log.warn("Repo Map: bad relation payload", t)
+            return
+        }
+        val id = request.get("id")?.takeIf { it.isJsonPrimitive }?.asInt ?: return
+
+        AppExecutorUtil.getAppExecutorService().execute {
+            val text = (try {
+                RelationExplainer.explain(payload)
+            } catch (t: Throwable) {
+                log.warn("Repo Map: relation explanation failed", t)
+                null
+            }) ?: fallbackRelation(request)
+
+            val js = "if (window.onRelationExplained) window.onRelationExplained($id, ${Gson().toJson(text)});"
+            ApplicationManager.getApplication().invokeLater {
+                try {
+                    browser.cefBrowser.executeJavaScript(js, browser.cefBrowser.url, 0)
+                } catch (t: Throwable) {
+                    log.warn("Repo Map: failed to deliver relation explanation", t)
+                }
+            }
+        }
+    }
+
+    private fun fallbackRelation(request: JsonObject): String {
+        val source = request.get("source")?.takeIf { !it.isJsonNull }?.asString ?: "This group"
+        val target = request.get("target")?.takeIf { !it.isJsonNull }?.asString ?: "another group"
+        val count = request.get("count")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+        val refs = if (count == 1) "1 class-level reference" else "$count class-level references"
+        return "$source uses $target ($refs)."
     }
 
     private fun loadingJson(): String = RepoTreeNode(
