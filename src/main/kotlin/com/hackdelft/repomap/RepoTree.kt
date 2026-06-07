@@ -21,6 +21,10 @@ data class RepoTreeNode(
     val path: String = "",
     val classCount: Int = 0,
     val file: String = "",
+    /** AI explanation of why this class landed in its group (class leaves only). */
+    val reason: String? = null,
+    /** Member names (methods/fields/supertypes) the AI cited as evidence for the grouping. */
+    val evidence: List<String> = emptyList(),
     val children: List<RepoTreeNode> = emptyList()
 ) {
     /** Serializes this node (and all descendants) into the JSON the webview expects. */
@@ -34,6 +38,15 @@ data class RepoTreeNode(
         sb.append(",\"path\":").append(Json.str(path))
         sb.append(",\"classCount\":").append(classCount)
         if (file.isNotEmpty()) sb.append(",\"file\":").append(Json.str(file))
+        if (reason != null) sb.append(",\"reason\":").append(Json.str(reason))
+        if (evidence.isNotEmpty()) {
+            sb.append(",\"evidence\":[")
+            evidence.forEachIndexed { index, member ->
+                if (index > 0) sb.append(',')
+                sb.append(Json.str(member))
+            }
+            sb.append(']')
+        }
         if (children.isNotEmpty()) {
             sb.append(",\"children\":[")
             children.forEachIndexed { index, child ->

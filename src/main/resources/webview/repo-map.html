@@ -183,6 +183,19 @@
       opacity: 0.06;
     }
 
+    /* Invisible, wide click target over each edge — and a hover cue. */
+    .edge-hit {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 16;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    .edge-hit:hover {
+      stroke: color-mix(in srgb, var(--violet) 22%, transparent);
+    }
+
     .bubble {
       cursor: pointer;
       outline: none;
@@ -340,6 +353,7 @@
         <button id="forward" class="button" type="button" title="Forward into the last node (→)">→</button>
         <button id="home" class="button" type="button" title="Back to the repository root">Home</button>
         <button id="resetView" class="button" type="button" title="Re-center and reset zoom">Reset view</button>
+        <button id="clearHighlights" class="button" type="button" title="Clear the AI evidence highlights from the editor">Clear highlights</button>
       </div>
     </header>
 
@@ -375,6 +389,7 @@
     const forwardButton = document.getElementById("forward");
     const homeButton = document.getElementById("home");
     const resetButton = document.getElementById("resetView");
+    const clearHighlightsButton = document.getElementById("clearHighlights");
 
     /* ------------------------------------------------------------------ */
     /* Tree model                                                          */
@@ -393,6 +408,10 @@
         // file in the IDE on click. Empty/absent for groups and sample data.
         fqn: node.path,
         file: node.file,
+        // AI explanation of the grouping (class leaves): why it's here + the
+        // member names cited as evidence, used to highlight code on edge click.
+        reason: node.reason,
+        evidence: node.evidence || [],
         parent,
         depth,
         index,
@@ -645,8 +664,10 @@
       nodeEls.forEach(({ group }, node) => {
         group.setAttribute("transform", `translate(${node.x}, ${node.y})`);
       });
-      edgeEls.forEach(({ edge, path }) => {
-        path.setAttribute("d", `M ${edge.source.x} ${edge.source.y} L ${edge.target.x} ${edge.target.y}`);
+      edgeEls.forEach(({ edge, path, hit }) => {
+        const d = `M ${edge.source.x} ${edge.source.y} L ${edge.target.x} ${edge.target.y}`;
+        path.setAttribute("d", d);
+        if (hit) hit.setAttribute("d", d);
       });
     }
 
@@ -723,7 +744,19 @@
         const path = document.createElementNS(SVGNS, "path");
         path.setAttribute("class", "edge");
         edgesLayer.appendChild(path);
-        edgeEls.push({ edge, path });
+
+        // A wide, invisible hit path makes the thin edge easy to click. Only
+        // hub→child edges (the focus is the source) carry the "explain" action.
+        let hit = null;
+        if (edge.source === focus) {
+          hit = document.createElementNS(SVGNS, "path");
+          hit.setAttribute("class", "edge-hit");
+          // Stop the canvas pan from starting so the click registers on the edge.
+          hit.addEventListener("pointerdown", (event) => event.stopPropagation());
+          hit.addEventListener("click", () => explainEdge(edge));
+          edgesLayer.appendChild(hit);
+        }
+        edgeEls.push({ edge, path, hit });
       });
 
       currentNodes.forEach((node) => {
@@ -852,6 +885,44 @@
       } catch (error) {
         /* bridge not available (e.g. standalone preview) — ignore */
       }
+    }
+
+    // Clicking an edge explains the child: open its file and highlight the exact
+    // members the AI cited for putting it in this group. Edges into a sub-group
+    // (not a leaf) just drill into that group.
+    function explainEdge(edge) {
+      const child = edge.target === focus ? edge.source : edge.target;
+      if (child.children && child.children.length) {
+        handleNodeClick(child);
+        return;
+      }
+      state.selected = child;
+      updateDetails();
+      explainLeafInIde(child);
+    }
+
+    // Bridge to the IDE (window.explainInIde): open the file and highlight the
+    // AI-cited members. Falls back to a plain open if the explain bridge is absent.
+    function explainLeafInIde(node) {
+      const fqn = node.fqn || "";
+      const file = node.file || "";
+      if (!fqn && !file) {
+        return;
+      }
+      if (typeof window.explainInIde === "function") {
+        try {
+          window.explainInIde(JSON.stringify({
+            fqn: fqn,
+            file: file,
+            reason: node.reason || "",
+            evidence: node.evidence || []
+          }));
+          return;
+        } catch (error) {
+          /* fall through to a plain open */
+        }
+      }
+      openLeafInIde(node);
     }
 
     // Jump straight to any ancestor (used by the breadcrumb), keeping the
@@ -1051,6 +1122,11 @@
     forwardButton.addEventListener("click", goForward);
     homeButton.addEventListener("click", goHome);
     resetButton.addEventListener("click", resetView);
+    clearHighlightsButton.addEventListener("click", () => {
+      if (typeof window.clearHighlights === "function") {
+        try { window.clearHighlights(); } catch (error) { /* bridge absent — ignore */ }
+      }
+    });
     window.addEventListener("keydown", (event) => {
       if (event.key === "ArrowLeft" || event.key === "Backspace") {
         event.preventDefault();

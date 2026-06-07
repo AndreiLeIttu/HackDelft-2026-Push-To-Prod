@@ -33,7 +33,11 @@ object      LlmGrouping {
         "directly to a higher-level group that also has sub-groups.\n" +
         "Group by responsibility/use-case from names, members and supertypes. Use concise, " +
         "human-friendly names (e.g. \"Order Checkout\", \"Authentication\", \"Database / " +
-        "Persistence\"). Every class appears in exactly one leaf group. Respond with JSON only."
+        "Persistence\"). Every class appears in exactly one leaf group.\n" +
+        "- For EVERY class, explain its placement: a one-sentence `reason`, and an `evidence` " +
+        "list naming the specific methods/fields/supertypes that justify the group. Evidence " +
+        "names MUST be copied verbatim from that class's listed members — never invent names.\n" +
+        "Respond with JSON only."
 
     /** Changes whenever the prompt changes, so the cache invalidates on prompt edits. */
     fun promptVersion(): Int = SYSTEM.hashCode()
@@ -105,9 +109,9 @@ object      LlmGrouping {
         } ?: emptyList()
 
         val classLeaves = json.getAsJsonArray("classes")?.mapNotNull { element ->
-            val signature = resolveClass(element, list, byFqn) ?: return@mapNotNull null
-            if (!assigned.add(signature.fqn)) return@mapNotNull null
-            classLeaf(signature.fqn, signature.name, signature.file)
+            val ref = resolveClassEntry(element, list, byFqn) ?: return@mapNotNull null
+            if (!assigned.add(ref.sig.fqn)) return@mapNotNull null
+            classLeaf(ref.sig.fqn, ref.sig.name, ref.sig.file, ref.reason, ref.evidence)
         } ?: emptyList()
 
         val kids = childGroups + classLeaves
@@ -122,6 +126,39 @@ object      LlmGrouping {
             classCount = count,
             children = kids
         )
+    }
+
+    /** A resolved class plus the AI's justification for its placement. */
+    private data class ClassRef(val sig: ClassSignature, val reason: String?, val evidence: List<String>)
+
+    /**
+     * Parses one "classes" entry, which may be a bare number/fqn (legacy) or an object
+     * `{n, reason, evidence}`. Evidence is filtered to names actually present in the
+     * signature, so hallucinated members never reach the highlighter.
+     */
+    private fun resolveClassEntry(
+        element: com.google.gson.JsonElement,
+        list: List<ClassSignature>,
+        byFqn: Map<String, ClassSignature>
+    ): ClassRef? {
+        if (element.isJsonNull) return null
+        if (element.isJsonObject) {
+            val obj = element.asJsonObject
+            val refElement = obj.get("n") ?: obj.get("class") ?: obj.get("id") ?: obj.get("number")
+            val sig = (refElement?.let { resolveClass(it, list, byFqn) })
+                ?: obj.get("fqn")?.takeIf { !it.isJsonNull }?.let { byFqn[it.asString] }
+                ?: return null
+            val reason = obj.get("reason")?.takeIf { !it.isJsonNull }?.asString?.trim()?.ifEmpty { null }
+            val rawEvidence = obj.getAsJsonArray("evidence")
+                ?.mapNotNull { if (it.isJsonNull) null else it.asString.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList()
+            val valid = (sig.methods + sig.fields + sig.supertypes).toHashSet()
+            val evidence = rawEvidence.filter { it in valid }
+            return ClassRef(sig, reason, evidence)
+        }
+        val sig = resolveClass(element, list, byFqn) ?: return null
+        return ClassRef(sig, null, emptyList())
     }
 
     /** Resolves a class reference that may be a 1-based index number or a fully-qualified name. */
@@ -140,20 +177,29 @@ object      LlmGrouping {
         return byFqn[element.asString]
     }
 
-    private fun classLeaf(fqn: String, name: String, file: String = "") = RepoTreeNode(
+    private fun classLeaf(
+        fqn: String,
+        name: String,
+        file: String = "",
+        reason: String? = null,
+        evidence: List<String> = emptyList()
+    ) = RepoTreeNode(
         name = name,
         kind = "class",
-        summary = "Class · $fqn",
+        summary = reason ?: "Class · $fqn",
         path = fqn,
         classCount = 1,
-        file = file
+        file = file,
+        reason = reason,
+        evidence = evidence
     )
 
     private fun userPrompt(signatures: List<ClassSignature>): String = buildString {
         appendLine("Group the numbered classes below. Output JSON of exactly this shape:")
-        appendLine("""{"groups":[{"name":"...","summary":"...","children":[ ...same shape... ],"classes":[<class numbers>]}]}""")
+        appendLine("""{"groups":[{"name":"...","summary":"...","children":[ ...same shape... ],"classes":[{"n":<class number>,"reason":"one sentence why it belongs here","evidence":["memberName", ...]}]}]}""")
         appendLine("Rules:")
-        appendLine("- Reference each class by its NUMBER (the integer in brackets), NOT its name. \"classes\" must contain integers only.")
+        appendLine("- Each entry in \"classes\" is an object with \"n\" (the integer in brackets), a short \"reason\", and an \"evidence\" array.")
+        appendLine("- \"evidence\" must list ONLY exact method/field/super names copied verbatim from that class's signature line below — never invent or paraphrase names. Pick the 1-4 most telling ones.")
         appendLine("- Every class number below must appear in exactly one leaf group's \"classes\".")
         appendLine("- Use as many or as few groups and levels as the project naturally needs; don't force a count (2 groups is fine if that fits).")
         appendLine("- Put classes only inside leaf groups; each level should be clearly coarser than the one below it.")

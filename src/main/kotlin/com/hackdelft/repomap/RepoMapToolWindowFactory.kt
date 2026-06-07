@@ -1,11 +1,22 @@
 package com.hackdelft.repomap
 
+import com.google.gson.JsonParser
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.markup.HighlighterLayer
+import com.intellij.openapi.editor.markup.HighlighterTargetArea
+import com.intellij.openapi.editor.markup.RangeHighlighter
+import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.ui.JBColor
+import java.awt.Color
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.psi.JavaPsiFacade
@@ -37,9 +48,25 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
             openInIde(project, request)
             null
         }
-        // Define window.openInIde after every page load (loadHTML runs twice:
+        // Explainability: open the child file and highlight the members the AI
+        // cited for putting it in its group (payload is JSON: fqn/file/reason/evidence).
+        val explainQuery = JBCefJSQuery.create(browser as JBCefBrowserBase)
+        explainQuery.addHandler { request ->
+            explainInIde(project, request)
+            null
+        }
+        // Clear the evidence highlights painted by the last edge-click.
+        val clearQuery = JBCefJSQuery.create(browser as JBCefBrowserBase)
+        clearQuery.addHandler { _ ->
+            ApplicationManager.getApplication().invokeLater { clearActiveHighlights() }
+            null
+        }
+        // Define the bridges after every page load (loadHTML runs twice:
         // the loading placeholder, then the real tree).
-        val bridgeJs = "window.openInIde = function(p) { ${openQuery.inject("p")} };"
+        val bridgeJs =
+            "window.openInIde = function(p) { ${openQuery.inject("p")} };" +
+            "window.explainInIde = function(p) { ${explainQuery.inject("p")} };" +
+            "window.clearHighlights = function() { ${clearQuery.inject("''")} };"
         browser.jbCefClient.addLoadHandler(object : CefLoadHandlerAdapter() {
             override fun onLoadEnd(cefBrowser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                 if (cefBrowser != null) {
@@ -134,6 +161,128 @@ class RepoMapToolWindowFactory : ToolWindowFactory {
                 }
             }
         }
+    }
+
+    /** A file to open plus the member ranges (and caret) to highlight. */
+    private data class ExplainTarget(val file: VirtualFile, val ranges: List<TextRange>, val caret: Int)
+
+    /**
+     * Opens the child file for a clicked edge and highlights the exact members the AI
+     * cited as evidence for the grouping. Payload is JSON {fqn, file, reason, evidence[]}.
+     * PSI resolution + range lookup run off the EDT; opening/highlighting on the EDT.
+     */
+    private fun explainInIde(project: Project, payload: String) {
+        val request = try {
+            JsonParser.parseString(payload).asJsonObject
+        } catch (t: Throwable) {
+            log.warn("Repo Map: bad explain payload", t)
+            return
+        }
+        val fqn = request.get("fqn")?.takeIf { !it.isJsonNull }?.asString?.trim().orEmpty()
+        val file = request.get("file")?.takeIf { !it.isJsonNull }?.asString?.trim().orEmpty()
+        val evidence = request.getAsJsonArray("evidence")
+            ?.mapNotNull { if (it.isJsonNull) null else it.asString.trim().ifEmpty { null } }
+            ?.toHashSet()
+            ?: hashSetOf()
+        if (fqn.isEmpty() && file.isEmpty()) return
+
+        AppExecutorUtil.getAppExecutorService().execute {
+            val target: ExplainTarget? = try {
+                ReadAction.nonBlocking(Callable { resolveExplainTarget(project, fqn, file, evidence) })
+                    .inSmartMode(project).executeSynchronously()
+            } catch (t: Throwable) {
+                log.warn("Repo Map: failed to resolve explain target '$fqn'", t)
+                null
+            }
+            if (target == null) {
+                log.info("Repo Map: nothing to explain for '$fqn' / '$file'")
+                return@execute
+            }
+            ApplicationManager.getApplication().invokeLater { openAndHighlight(project, target) }
+        }
+    }
+
+    /** Read-action: resolve the class, collect the evidence members' ranges. */
+    private fun resolveExplainTarget(
+        project: Project,
+        fqn: String,
+        file: String,
+        evidence: Set<String>
+    ): ExplainTarget? {
+        val facade = JavaPsiFacade.getInstance(project)
+        val psiClass: PsiClass? = if (fqn.isEmpty()) null else
+            facade.findClass(fqn, GlobalSearchScope.projectScope(project))
+                ?: facade.findClass(fqn, GlobalSearchScope.allScope(project))
+
+        val virtualFile = psiClass?.containingFile?.virtualFile
+        if (psiClass != null && virtualFile != null) {
+            val ranges = ArrayList<TextRange>()
+            if (evidence.isNotEmpty()) {
+                // Highlight the FULL member (all its lines), not just the name.
+                for (method in psiClass.methods) {
+                    if (method.name in evidence) ranges += method.textRange
+                }
+                for (field in psiClass.fields) {
+                    if (field.name in evidence) ranges += field.textRange
+                }
+                psiClass.extendsList?.referenceElements?.forEach { ref ->
+                    if (ref.referenceName != null && ref.referenceName in evidence) ranges += ref.textRange
+                }
+                psiClass.implementsList?.referenceElements?.forEach { ref ->
+                    if (ref.referenceName != null && ref.referenceName in evidence) ranges += ref.textRange
+                }
+            }
+            val caret = ranges.minOfOrNull { it.startOffset } ?: psiClass.textOffset
+            return ExplainTarget(virtualFile, ranges, caret)
+        }
+
+        // No JVM class (e.g. another language): open the file by path, no highlight.
+        val byPath = if (file.isEmpty()) null else
+            LocalFileSystem.getInstance().findFileByPath(file.replace('\\', '/'))
+        return byPath?.let { ExplainTarget(it, emptyList(), 0) }
+    }
+
+    // Highlights painted by the last edge-click, cleared before the next one so they
+    // don't accumulate. Touched only on the EDT.
+    private val activeHighlights = mutableListOf<Pair<Editor, RangeHighlighter>>()
+
+    // Soft violet line background, adapting to light/dark themes.
+    private val evidenceAttributes = TextAttributes().apply {
+        backgroundColor = JBColor(Color(0xEA, 0xE3, 0xFF), Color(0x3B, 0x2F, 0x5C))
+    }
+
+    /** EDT: open the editor at the first evidence member and fill those lines with colour. */
+    private fun openAndHighlight(project: Project, target: ExplainTarget) {
+        try {
+            val descriptor = OpenFileDescriptor(project, target.file, target.caret)
+            val editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true) ?: return
+            clearActiveHighlights() // drop the previous explanation's highlights
+            if (target.ranges.isEmpty()) return
+            val markup = editor.markupModel
+            for (range in target.ranges) {
+                val highlighter = markup.addRangeHighlighter(
+                    range.startOffset,
+                    range.endOffset,
+                    HighlighterLayer.SELECTION - 1,
+                    evidenceAttributes,
+                    HighlighterTargetArea.LINES_IN_RANGE
+                )
+                activeHighlights += editor to highlighter
+            }
+        } catch (t: Throwable) {
+            log.warn("Repo Map: failed to open/highlight explanation", t)
+        }
+    }
+
+    private fun clearActiveHighlights() {
+        for ((editor, highlighter) in activeHighlights) {
+            try {
+                if (!editor.isDisposed) editor.markupModel.removeHighlighter(highlighter)
+            } catch (t: Throwable) {
+                log.warn("Repo Map: failed to clear a highlight", t)
+            }
+        }
+        activeHighlights.clear()
     }
 
     private fun loadingJson(): String = RepoTreeNode(
