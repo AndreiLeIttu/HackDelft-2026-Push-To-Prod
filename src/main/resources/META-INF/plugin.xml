@@ -8,6 +8,8 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <!-- Required at runtime: PsiClassOwner / Java PSI classes live in the Java module. -->
+    <depends>com.intellij.modules.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow
@@ -15,5 +17,15 @@
             anchor="right"
             secondary="true"
             factoryClass="com.hackdelft.repomap.RepoMapToolWindowFactory"/>
+        <notificationGroup id="Repo Map" displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <action id="com.hackdelft.repomap.ExportRepoTree"
+                class="com.hackdelft.repomap.ExportRepoTreeAction"
+                text="Export Repository Tree (JSON)"
+                description="Analyze the project and write the architecture tree to repo-map.tree.json">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

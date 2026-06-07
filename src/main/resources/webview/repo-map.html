@@ -386,6 +386,9 @@
         name: node.name,
         kind: node.kind,
         summary: node.summary,
+        // Total classes in this subtree (from the backend) — the node's weight.
+        // Falls back to undefined for the built-in sample data.
+        classCount: node.classCount,
         parent,
         depth,
         index,
@@ -439,13 +442,17 @@
       return node.color;
     }
 
-    // The focus is the largest; children hint their own depth by child count, so
-    // nodes you can drill into look bigger (Obsidian sizes by link count).
+    // The focus is the largest; other nodes scale with their weight — the number
+    // of classes in their subtree (Obsidian sizes by link count). Sample data
+    // without classCount falls back to the immediate-child count.
     function radiusFor(node) {
       if (node === focus) {
         return 44; // always larger than any child (children cap at 34)
       }
-      return Math.min(34, 14 + Math.sqrt(node.children.length) * 5);
+      const weight = typeof node.classCount === "number" && node.classCount > 0
+        ? node.classCount
+        : node.children.length;
+      return Math.min(34, 14 + Math.sqrt(weight) * 4.5);
     }
 
     /* ------------------------------------------------------------------ */
